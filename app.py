@@ -88,8 +88,9 @@ class AnswerOverlay(QWidget):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.host = host
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedWidth(520)
+        self.setFixedWidth(560)
         self._drag = None
+        self._full = ""
 
         root = QFrame(self)
         root.setObjectName("card")
@@ -123,10 +124,26 @@ class AnswerOverlay(QWidget):
         head.addWidget(self.btn_close)
         inner.addLayout(head)
 
+        # 大号答案
+        self.answer = QLabel("")
+        self.answer.setWordWrap(True)
+        self.answer.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.answer.setStyleSheet(
+            "font-size:34px;font-weight:800;color:#7ee787;"
+            "padding:10px 12px;border-radius:10px;background:rgba(126,231,135,18);"
+        )
+        self.answer.setMinimumHeight(56)
+        inner.addWidget(self.answer)
+
+        # 解析
+        self.part_label = QLabel("解析")
+        self.part_label.setStyleSheet("color:#7f8896;font-size:11px;margin-top:6px;")
+        inner.addWidget(self.part_label)
+
         self.body = QTextBrowser()
-        self.body.setStyleSheet("background:transparent;border:none;color:#f2f4f8;font-size:15px;")
-        self.body.setMinimumHeight(120)
-        self.body.setMaximumHeight(420)
+        self.body.setStyleSheet("background:transparent;border:none;color:#d5dae3;font-size:14px;line-height:1.55;")
+        self.body.setMinimumHeight(90)
+        self.body.setMaximumHeight(360)
         inner.addWidget(self.body)
 
         self.foot = QLabel("")
@@ -138,16 +155,45 @@ class AnswerOverlay(QWidget):
         self.btn_close.clicked.connect(self.hide)
 
     def set_text(self, text):
-        self.body.setPlainText(text)
-        self.body.moveCursor(QTextCursor.End)
+        self._full = text or ""
+        self._render()
 
     def append_text(self, delta):
-        cur = self.body.textCursor()
-        cur.movePosition(QTextCursor.End)
-        self.body.setTextCursor(cur)
-        self.body.insertPlainText(delta)
+        self._full = getattr(self, "_full", "") + (delta or "")
+        self._render()
+
+    def _render(self):
+        import re as _re
+        full = getattr(self, "_full", "")
+        # 拆出「答案」和「解析」
+        idx = -1
+        for marker in ("解析：", "解析:"):
+            i = full.find(marker)
+            if i >= 0:
+                idx = i
+                break
+        head = full if idx < 0 else full[:idx]
+        tail = "" if idx < 0 else full[idx:]
+
+        m = _re.search(r"答\s*案\s*[:：]\s*([\s\S]*)", head)
+        if m:
+            ans = m.group(1).strip()
+        else:
+            ans = head.strip()
+        ans = ans.strip().strip("：:").strip()
+
+        if ans:
+            self.answer.setText(ans)
+            self.answer.show()
+            self.part_label.show()
+        else:
+            self.answer.setText("…")
+            self.part_label.hide()
+
+        tail = tail.replace("解析：", "").replace("解析:", "").strip()
+        self.body.setPlainText(tail)
         sb = self.body.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        sb.setValue(0)
 
     def copy_text(self):
         QApplication.clipboard().setText(self.body.toPlainText())
@@ -378,6 +424,7 @@ class ScanWorker(QObject):
         self.paused = False
         self.force_once = False
         self.last_sig = None
+        self.last_q_key = ""
         self.idle_rounds = 0
         self.ocr = None
 
@@ -439,6 +486,15 @@ class ScanWorker(QObject):
                     self.state.emit("没读到文字（区域里没内容？）", COLOR_WARN)
                     time.sleep(0.6)
                     continue
+
+                q_key = "".join(text.split())[:300]
+                if q_key == self.last_q_key and not self.force_once:
+                    self.detail.emit(f"OCR {ocr_cost:.2f}s · 同一道题，跳过（不重复请求）")
+                    self.state.emit("同一道题，已跳过", COLOR_IDLE)
+                    time.sleep(max(1.0, float(self.cfg.get("scan_interval", 1.2))))
+                    continue
+                self.last_q_key = q_key
+                self.force_once = False
 
                 self.ocr_done.emit(text)
                 self.detail.emit(f"OCR {ocr_cost:.2f}s · {len(text)} 字 · 置信 {conf:.2f}")
