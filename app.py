@@ -377,7 +377,8 @@ class ScanWorker(QObject):
         self.running = True
         self.paused = False
         self.force_once = False
-        self.last_hash = ""
+        self.last_sig = None
+        self.idle_rounds = 0
         self.ocr = None
 
     def ensure_ocr(self):
@@ -404,16 +405,30 @@ class ScanWorker(QObject):
                 t0 = time.time()
                 # 先让主线程把答案窗藏起来，避免把答案本身拍进去（否则会死循环）
                 self.prepare_capture.emit()
-                time.sleep(0.07)
+                time.sleep(0.06)
                 shot = sct.grab(self.region)
                 self.after_capture.emit()
                 img = Image.frombytes("RGB", shot.size, shot.rgb)
-                raw = img.tobytes()
-                h = hashlib.md5(raw).hexdigest()
-                if self.cfg.get("dedupe", True) and h == self.last_hash and not self.force_once:
-                    time.sleep(0.35)
+
+                # 感知哈希：缩小成灰度小图再比，容忍光标闪烁/抗锯齿等微小变化
+                small = img.convert("L").resize((64, 40))
+                sig = list(small.getdata())
+                unchanged = False
+                if self.cfg.get("dedupe", True) and self.last_sig is not None and not self.force_once:
+                    diff = 0
+                    for a, b in zip(sig, self.last_sig):
+                        d = a - b
+                        diff += d if d >= 0 else -d
+                    unchanged = (diff / len(sig)) < 2.2
+                self.last_sig = sig
+                if unchanged:
+                    # 没变化：不 OCR、不请求，逐步放慢（省 CPU）
+                    self.idle_rounds = min(self.idle_rounds + 1, 8)
+                    if self.idle_rounds == 3:
+                        self.state.emit("监控中（画面没变化，已降频）", COLOR_IDLE)
+                    time.sleep(min(0.4 * self.idle_rounds, 3.0))
                     continue
-                self.last_hash = h
+                self.idle_rounds = 0
                 self.force_once = False
 
                 self.state.emit("识别中…", COLOR_ACCENT)
