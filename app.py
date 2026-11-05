@@ -168,6 +168,51 @@ class AnswerOverlay(QWidget):
         scr = QApplication.primaryScreen().availableGeometry()
         self.move(scr.right() - self.width() - 24, scr.top() + 90)
 
+    def place_avoiding(self, region):
+        """尽量把答案窗放到监控区域之外，避免拍到自己造成闪。"""
+        scr = QApplication.primaryScreen().availableGeometry()
+        w, h = self.width(), max(self.sizeHint().height(), 220)
+        m = 10
+        rx, ry = int(region.get("left", 0)), int(region.get("top", 0))
+        rw, rh = int(region.get("width", 0)), int(region.get("height", 0))
+
+        cands = []
+        if rw and rh:
+            cands += [
+                (rx + rw + m, ry),                     # 右侧
+                (rx - w - m, ry),                      # 左侧
+                (rx, ry + rh + m),                     # 下方
+                (rx, ry - h - m),                      # 上方
+            ]
+        cands += [(scr.right() - w - 20, scr.top() + 80)]
+
+        best = None
+        for x, y in cands:
+            if x < scr.left() + 8 or y < scr.top() + 8:
+                continue
+            if x + w > scr.right() - 8 or y + h > scr.bottom() - 8:
+                continue
+            # 与监控区域有重叠就跳过
+            if rw and rh and not (x + w < rx or x > rx + rw or y + h < ry or y > ry + rh):
+                continue
+            best = (x, y)
+            break
+
+        if best is None:
+            best = (scr.right() - w - 20, scr.top() + 80)
+        self.move(*best)
+
+    def overlaps(self, region):
+        try:
+            g = self.frameGeometry()
+            rx, ry = int(region.get("left", 0)), int(region.get("top", 0))
+            rw, rh = int(region.get("width", 0)), int(region.get("height", 0))
+            if not rw or not rh:
+                return False
+            return not (g.right() < rx or g.left() > rx + rw or g.bottom() < ry or g.top() > ry + rh)
+        except Exception:
+            return False
+
 
 # ---------------------------------------------------------------- 设置对话框
 class SettingsDialog(QDialog):
@@ -619,9 +664,12 @@ class MainWindow(QWidget):
 
     # -------- 答案
     def _hide_overlay_for_capture(self):
-        if self.overlay.isVisible():
+        # 只有答案窗真的盖住了监控区域才藏（否则每秒闪一下）
+        if self.overlay.isVisible() and self.overlay.overlaps(self.region):
             self._overlay_was_visible = True
             self.overlay.hide()
+        else:
+            self._overlay_was_visible = False
 
     def _restore_overlay_after_capture(self):
         if getattr(self, "_overlay_was_visible", False):
@@ -629,18 +677,20 @@ class MainWindow(QWidget):
             self.overlay.show()
 
     def _on_ocr(self, text):
-        self.last_question = text
-        self.add_log("识别到：" + text.replace("\n", " ")[:60])
+        if text != self.last_question:
+            self.overlay.set_text("")      # 新题：清掉上一题答案，避免越堆越长
+            self.last_question = text
+            self.add_log("识别到：" + text.replace("\n", " ")[:60])
 
     def _on_delta(self, d):
         if not self.overlay.isVisible():
-            self.overlay.place_default()
+            self.overlay.place_avoiding(self.region)
             self.overlay.show()
         self.overlay.append_text(d)
 
     def _on_answer(self, full, cost):
         if not self.overlay.isVisible():
-            self.overlay.place_default()
+            self.overlay.place_avoiding(self.region)
             self.overlay.show()
         self.overlay.foot.setText(f"{cost:.2f}s · 深色可拖动")
         self.overlay.raise_()
@@ -659,7 +709,7 @@ class MainWindow(QWidget):
         if self.overlay.isVisible():
             self.overlay.hide()
         else:
-            self.overlay.place_default()
+            self.overlay.place_avoiding(self.region)
             self.overlay.show()
             self.overlay.raise_()
 
