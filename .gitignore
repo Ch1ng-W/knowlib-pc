@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+config.json
+history.jsonl
+.venv/
+installer/
+*.exe
