@@ -3,6 +3,8 @@ import io
 import os
 import sys
 import time
+import ctypes
+import ctypes.wintypes  # noqa: F401
 import hashlib
 import traceback
 
@@ -1234,6 +1236,7 @@ class MainWindow(QWidget):
         self._was_minimized = False
         self._mini_anim = None
         self._snap = None
+        self._last_pos = None
         self._page_anim = None
         self._fade_effects = {}
 
@@ -1390,6 +1393,10 @@ class MainWindow(QWidget):
                                           on_back=lambda: self.show_page("home"))
         for p in (self.page_history, self.page_bank, self.page_settings):
             self.stack.addWidget(p)
+        # 页面自身的最小尺寸会让窗口在动画中"弹"到布局最小尺寸，压成 1x1 避免
+        for p in (self.page_home, self.page_history, self.page_bank, self.page_settings):
+            p.setMinimumSize(1, 1)
+        self.stack.setMinimumSize(1, 1)
         self.stack.setCurrentWidget(self.page_home)
 
         self.setup_hotkeys()
@@ -1491,6 +1498,7 @@ class MainWindow(QWidget):
         ov = _SnapWindow(snap, geo)
         ov.show()
         self._snap = ov
+        self._last_pos = self.pos()
         self.showMinimized()
 
         scr = QGuiApplication.screenAt(geo.center()) or QApplication.primaryScreen()
@@ -1540,26 +1548,46 @@ class MainWindow(QWidget):
                 self._was_minimized = True
             elif was and not now:
                 self._was_minimized = False
-                QTimer.singleShot(10, self._pop_in)
+                QTimer.singleShot(0, self._pop_in)
         super().changeEvent(e)
+
+    def nativeEvent(self, eventType, message):
+        """拦下任务栏右键/左键的 SC_MINIMIZE，先跑自己的飞入动画。"""
+        try:
+            if eventType == b"windows_generic_MSG":
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                if msg.message == 0x0112 and (int(msg.wParam) & 0xFFF0) == 0xF020:
+                    if self._anim_on() and not self.isMinimized():
+                        QTimer.singleShot(0, self.animate_minimize)
+                        return True, 0
+        except Exception:
+            pass
+        return super().nativeEvent(eventType, message)
 
     def _pop_in(self):
         """从任务栏恢复时：淡入 + 向上小位移。"""
         if not self._anim_on() or not self.isVisible():
             return
-        pos = self.pos()
-        self.setWindowOpacity(0.0)
-        self.move(pos.x(), pos.y() + 14)
+        self._keep_on_screen()
+        cur = self.pos()
+        want = getattr(self, "_last_pos", None)
+        target = cur
+        if want is not None:
+            probe = QRect(want.x() + self.width() // 2, want.y() + self.height() // 2, 1, 1)
+            if QGuiApplication.screenAt(probe.topLeft()) is not None:
+                target = self._clamped_rect(QRect(want, self.size())).topLeft()
         a1 = QPropertyAnimation(self, b"pos", self)
         a1.setDuration(220)
-        a1.setStartValue(QPoint(pos.x(), pos.y() + 14))
-        a1.setEndValue(pos)
+        a1.setStartValue(QPoint(target.x(), target.y() + 14))
+        a1.setEndValue(target)
         a1.setEasingCurve(QEasingCurve.OutCubic)
         a2 = QPropertyAnimation(self, b"windowOpacity", self)
         a2.setDuration(200)
         a2.setStartValue(0.0)
         a2.setEndValue(1.0)
         a2.setEasingCurve(QEasingCurve.OutCubic)
+        self.move(target.x(), target.y() + 14)
+        self.setWindowOpacity(0.0)
         self._pop_anims = (a1, a2)
         a1.start()
         a2.start()
