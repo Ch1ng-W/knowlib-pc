@@ -1,6 +1,7 @@
 """小团搜题 — 截图 + OCR + AI 解题，带状态反馈的桌面小工具。"""
 import io
 import os
+import re
 import sys
 import time
 import shutil
@@ -1488,6 +1489,26 @@ class HistoryPage(QWidget):
 
 
 # ---------------------------------------------------------------- 本地题库窗
+# 从解析里猜答案（题库里有老数据 answer 为空）
+_GUESS_PATTERNS = (
+    r"故(?:选|应选|答案选)\s*([A-H]{1,4})",
+    r"答案\s*[:：]?\s*([A-H]{1,4})",
+    r"答案\s*[:：]?\s*(正确|错误|对|错|是|否|√|×)",
+    r"^(正确|错误)",
+)
+
+
+def _guess_answer(text):
+    s = (text or "").strip()
+    if not s:
+        return ""
+    for p in _GUESS_PATTERNS:
+        m = re.search(p, s)
+        if m:
+            return m.group(1)
+    return ""
+
+
 class EditQuestionDialog(QDialog):
     """编辑 / 新建一条题库题目，支持在解析里插入图片。"""
 
@@ -1618,7 +1639,10 @@ class BankPage(QWidget):
 
         body = QHBoxLayout()
         self.list = QListWidget()
-        self.list.setFixedWidth(280)
+        self.list.setFixedWidth(260)
+        self.list.setWordWrap(False)
+        self.list.setTextElideMode(Qt.ElideRight)
+        self.list.setUniformItemSizes(True)
         self.list.currentRowChanged.connect(self.show_item)
         self.list.itemDoubleClicked.connect(lambda _i: self.edit_current())
         body.addWidget(self.list)
@@ -1627,30 +1651,31 @@ class BankPage(QWidget):
         self.view = QTextBrowser()
         right.addWidget(self.view, 1)
         # ---- 按钮（先统一建好，再用网格摆，避免窗口变窄时被挤成一条）
-        self.btn_copy = QPushButton("复制答案")
-        self.btn_copy.clicked.connect(self.copy_current)
         self.btn_edit = QPushButton("编辑这条")
         self.btn_edit.clicked.connect(self.edit_current)
         self.btn_new = QPushButton("＋ 新建")
         self.btn_new.clicked.connect(self.new_question)
         self.btn_del = QPushButton("删除这条")
         self.btn_del.clicked.connect(self.delete_current)
-        self.btn_all = QPushButton("全选")
-        self.btn_all.clicked.connect(lambda: self.check_all(True))
-        self.btn_none = QPushButton("全不选")
-        self.btn_none.clicked.connect(lambda: self.check_all(False))
-        self.btn_md = QPushButton("导出 MD")
-        self.btn_md.clicked.connect(self.export_md)
-        self.btn_pdf = QPushButton("导出 PDF")
-        self.btn_pdf.clicked.connect(self.export_pdf)
-        self.btn_pdf.setStyleSheet(
+
+        # 全选 / 取消全选 合成一个按钮
+        self.btn_sel = QPushButton("全选")
+        self.btn_sel.clicked.connect(self.toggle_select_all)
+
+        # 导出合成一个下拉
+        self.btn_export_menu = QPushButton("导出 ▾")
+        self.btn_export_menu.setStyleSheet(
             "QPushButton{background:#2f6feb;color:#ffffff;border:none;border-radius:8px;"
-            "padding:7px 14px;}QPushButton:hover{background:#3f7ffb;}")
+            "padding:7px 16px;}QPushButton:hover{background:#3f7ffb;}")
+        m = QMenu(self.btn_export_menu)
+        m.addAction("导出 Markdown（.md）", self.export_md)
+        m.addAction("导出 PDF", self.export_pdf)
+        m.addAction("导出 CSV（整个题库）", self.export_csv)
+        self.btn_export_menu.setMenu(m)
+
         self.btn_import = QPushButton("导入题库")
         self.btn_import.setToolTip("支持 CSV / Markdown / TXT / JSON")
         self.btn_import.clicked.connect(self.import_file)
-        self.btn_export = QPushButton("导出 CSV")
-        self.btn_export.clicked.connect(self.export_csv)
         self.btn_clear = QPushButton("清空题库")
         self.btn_clear.clicked.connect(self.clear_all)
         self.btn_close = QPushButton("← 返回")
@@ -1664,19 +1689,18 @@ class BankPage(QWidget):
         tools.setHorizontalSpacing(8)
         tools.setVerticalSpacing(8)
         cells = [
-            (self.btn_edit, 0, 0), (self.btn_new, 0, 1),
-            (self.btn_del, 0, 2), (self.btn_copy, 0, 3),
-            (self.btn_all, 1, 0), (self.btn_none, 1, 1),
-            (self.btn_md, 2, 0), (self.btn_pdf, 2, 1),
-            (self.btn_export, 2, 2), (self.btn_import, 2, 3),
-            (self.btn_clear, 3, 0), (self.btn_close, 3, 3),
+            (self.btn_edit, 0, 0), (self.btn_new, 0, 1), (self.btn_del, 0, 2),
+            (self.btn_sel, 1, 0),
+            (self.btn_export_menu, 2, 0), (self.btn_import, 2, 1),
+            (self.btn_clear, 2, 2),
+            (self.btn_close, 3, 2),
         ]
         for b, r, col in cells:
             b.setCursor(Qt.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + 30)
             tools.addWidget(b, r, col)
-        tools.addWidget(self.chk_answer, 1, 2, 1, 2)
+        tools.addWidget(self.chk_answer, 1, 1, 1, 2)
         tools.setColumnStretch(4, 1)
         right.addLayout(tools)
         body.addLayout(right, 1)
@@ -1695,6 +1719,7 @@ class BankPage(QWidget):
             t = it.get("qtype") or ""
             head = f"[{(t[:2] + '·') if t else ''}{it['hits']}] "
             item = QListWidgetItem(f"{head}{q1}{mark}")
+            item.setToolTip((it["q_text"] or "").strip()[:400])
             item.setData(Qt.UserRole, it)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if it.get("id") in checked else Qt.Unchecked)
@@ -1718,6 +1743,15 @@ class BankPage(QWidget):
     def check_all(self, on):
         for i in range(self.list.count()):
             self.list.item(i).setCheckState(Qt.Checked if on else Qt.Unchecked)
+        if hasattr(self, "btn_sel"):
+            self.btn_sel.setText("全选" if not on else "取消全选")
+
+    def toggle_select_all(self):
+        total = self.list.count()
+        if total == 0:
+            return
+        all_on = all(self.list.item(i).checkState() == Qt.Checked for i in range(total))
+        self.check_all(not all_on)
 
     def show_item(self, row):
         if row < 0 or row >= self.list.count():
@@ -1730,15 +1764,20 @@ class BankPage(QWidget):
                 + "</div>")
         ans = (it.get("answer") or "").strip()
         sol = (it.get("solution") or "").strip()
+        if not ans and sol:
+            ans = _guess_answer(sol)
+        ans_html = (md_render.to_html(ans, color="#7ee787", font_size=16) if ans
+                    else "<div style='color:#8b949e;font-size:13px;padding:4px 0'>"
+                         "本题未单独给出答案，见下方解析</div>")
         html = (
             head
             + "<div style='color:#8fb6ff;font-size:12px;margin:12px 0 4px'>题目</div>"
             + md_render.to_html(md_render.clean_text(it.get("q_text", "")),
-                                color="#e6e9ef", font_size=14)
+                                color="#f2f5f9", font_size=15)
             + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>答案</div>"
-            + md_render.to_html(ans or "（无）", color="#7ee787", font_size=15)
+            + ans_html
             + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>解析</div>"
-            + md_render.to_html(sol or "（无）", color="#e6e9ef", font_size=14)
+            + md_render.to_html(sol or "（无）", color="#f2f5f9", font_size=15)
         )
         self.view.setHtml(html)
         self.view.verticalScrollBar().setValue(0)
