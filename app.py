@@ -1397,6 +1397,7 @@ LIGHT = {
     "btn": "#FBFBFB", "btnBorder": "#D6D6D6", "btnHover": "#F2F2F2",
     "accent": "#0067C0", "accentHover": "#1975C5", "accentText": "#FFFFFF",
     "log": "#FAFAFA",
+    "sb": "#C6C6C6", "sbHover": "#A8A8A8",
 }
 DARK = {
     "window": "#202020", "card": "#2B2B2B", "border": "rgba(255,255,255,26)",
@@ -1405,6 +1406,7 @@ DARK = {
     "btn": "#323232", "btnBorder": "rgba(255,255,255,26)", "btnHover": "#3A3A3A",
     "accent": "#4CC2FF", "accentHover": "#5FC9FF", "accentText": "#00243D",
     "log": "#262626",
+    "sb": "#5A5A5A", "sbHover": "#6E6E6E",
 }
 
 
@@ -1454,6 +1456,20 @@ def build_qss(t):
         "QListWidget::item{padding:7px 8px;border-radius:4px;}"
         f"QListWidget::item:selected{{background:{t['sel']};color:{t['text']};}}"
         f"QCheckBox{{color:{t['text']};}}"
+        "QScrollBar:vertical{background:transparent;width:10px;margin:0px;}"
+        f"QScrollBar::handle:vertical{{background:{t['sb']};border-radius:4px;"
+        "min-height:30px;margin:2px;}"
+        f"QScrollBar::handle:vertical:hover{{background:{t['sbHover']};}}"
+        "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;"
+        "background:transparent;border:none;}"
+        "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"
+        "QScrollBar:horizontal{background:transparent;height:10px;margin:0px;}"
+        f"QScrollBar::handle:horizontal{{background:{t['sb']};border-radius:4px;"
+        "min-width:30px;margin:2px;}"
+        f"QScrollBar::handle:horizontal:hover{{background:{t['sbHover']};}}"
+        "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0px;"
+        "background:transparent;border:none;}"
+        "QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}"
         "QScrollArea#pageScroll{background:transparent;border:none;}"
         "QScrollArea#pageScroll > QWidget > QWidget{background:transparent;}"
     )
@@ -1516,7 +1532,10 @@ class AboutPage(QWidget):
         head = QHBoxLayout()
         head.setSpacing(14)
         logo = QLabel()
-        pm = QPixmap(resource_path("logo.png"))
+        _dark = getattr(parent, "theme", LIGHT) is DARK
+        pm = QPixmap(resource_path("logo.png" if _dark else "logo_dark.png"))
+        if pm.isNull():
+            pm = QPixmap(resource_path("logo.png"))
         if not pm.isNull():
             logo.setPixmap(pm.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         head.addWidget(logo)
@@ -1678,19 +1697,7 @@ class MainWindow(QWidget):
         sl.setContentsMargins(10, 14, 10, 10)
         sl.setSpacing(2)
 
-        brand = QHBoxLayout()
-        brand.setContentsMargins(10, 0, 10, 12)
-        brand.setSpacing(8)
-        lg = QLabel()
-        pm = QPixmap(resource_path("logo.png"))
-        if not pm.isNull():
-            lg.setPixmap(pm.scaled(18, 18, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        brand.addWidget(lg)
-        nm = QLabel("Knowlib")
-        nm.setObjectName("brandName")
-        brand.addWidget(nm)
-        brand.addStretch(1)
-        sl.addLayout(brand)
+        sl.addSpacing(6)
 
         self.nav = {}
         for key, icon, text in (("home", "\ue80f", "答题"),
