@@ -73,6 +73,10 @@ MIT
 
 ## 更新日志
 
+### v1.1.0
+- 自动更新改走**国内直连**：优先读 `https://knowlib.fun/download/version.json`，失败才回退 GitHub
+- 下载也优先从官网拉（`Knowlib-PC-latest.exe`），GitHub 作为备用
+
 ### v1.0.9
 - 标题栏改用 Knowlib 官方白色线条 logo（不再用字母 K）
 - 托盘图标使用官方 app 图标

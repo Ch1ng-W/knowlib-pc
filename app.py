@@ -30,6 +30,22 @@ COLOR_IDLE = "#8a8f98"
 COLOR_ACCENT = "#5b9dff"
 
 
+def resource_path(name):
+    """找打包进 exe 的资源：PyInstaller 6 放在 _internal 里。"""
+    root = os.path.dirname(os.path.abspath(
+        sys.argv[0] if getattr(sys, "frozen", False) else __file__))
+    cands = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cands.append(os.path.join(meipass, name))
+    cands += [os.path.join(root, name), os.path.join(root, "_internal", name)]
+    for c in cands:
+        if os.path.exists(c):
+            return c
+    return cands[-1]
+
+
+
 # ---------------------------------------------------------------- 统一深色消息框
 # 注意：主窗口的样式表会串到 QMessageBox 上（浅色字 + 默认白底 = 看不清），
 # 所以所有消息框都显式套一层样式。
@@ -940,10 +956,7 @@ class TitleBar(QWidget):
         logo = QLabel()
         logo.setFixedSize(26, 26)
         logo.setAlignment(Qt.AlignCenter)
-        logo_path = os.path.join(
-            os.path.dirname(os.path.abspath(sys.argv[0] if getattr(sys, "frozen", False) else __file__)),
-            "logo.png")
-        pm = QPixmap(logo_path)
+        pm = QPixmap(resource_path("logo.png"))
         if pm.isNull():
             logo.setText("K")
             logo.setStyleSheet(
@@ -1159,9 +1172,8 @@ class MainWindow(QWidget):
 
     # -------- 托盘
     def _app_icon(self):
-        base = os.path.dirname(os.path.abspath(sys.argv[0] if getattr(sys, "frozen", False) else __file__))
-        for name in ("app.ico", "app.png"):
-            p = os.path.join(base, name)
+        for name in ("app.ico", "app.png", "logo.png"):
+            p = resource_path(name)
             if os.path.exists(p):
                 return QIcon(p)
         return self.style().standardIcon(QStyle.SP_ComputerIcon)
