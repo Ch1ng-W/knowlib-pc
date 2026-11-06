@@ -36,8 +36,10 @@
 
 ## 配置与数据
 
-- `config.json`：与 exe 同目录（写不进去则落到 `%APPDATA%\XiaoTuanSouTi`）
-- `history.jsonl`：每次问答的题面、答案、耗时
+- `%APPDATA%\Knowlib\config.json`：设置（含 API Key）
+- `%APPDATA%\Knowlib\bank.db`：本地题库
+- `%APPDATA%\Knowlib\history.jsonl`：每次问答的题面、答案、耗时
+- 便携模式：exe 同目录放 `portable.flag`，上述文件就放在 exe 旁边
 
 ## 从源码运行
 
@@ -70,6 +72,11 @@ pyinstaller --noconfirm --clean --windowed --name Knowlib --icon app.ico ^
 MIT
 
 ## 更新日志
+
+### v1.0.7
+- **数据不再放安装目录**：配置、题库、历史统一迁到 `%APPDATA%\Knowlib`
+  - 升级 / 卸载 / 换安装路径都不会丢数据（首次运行自动从旧位置复制，只复制不删除）
+  - 想便携使用：在 exe 同目录放一个空的 `portable.flag`，数据就跟着程序走
 
 ### v1.0.6
 - 新增**本地题库**：答过的题自动入库（SQLite），下次同题/近似题秒回答案，不消耗 token

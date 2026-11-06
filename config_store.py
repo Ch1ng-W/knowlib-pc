@@ -1,11 +1,20 @@
-"""配置存取：优先放在 exe 同目录（便携），写不进去就落到用户目录。"""
+"""配置存取：数据统一放 %APPDATA%\\Knowlib（升级/卸载都不丢），便携模式可放 exe 同目录。
+
+迁移规则（首次运行新版本时自动执行，只复制不删除）：
+  exe 同目录 / %APPDATA%\\XiaoTuanSouTi  →  %APPDATA%\\Knowlib
+涉及文件：config.json（含 API Key）、bank.db（本地题库）、history.jsonl（历史）
+"""
 import json
 import os
+import shutil
 import sys
 
-APP_NAME = "XiaoTuanSouTi"
-REG_NAME = "Knowlib"        # 开机自启的注册表项名
-APP_VERSION = "1.0.6"
+APP_NAME = "XiaoTuanSouTi"      # 旧目录名，仅用于迁移
+BRAND = "Knowlib"               # 新数据目录名
+REG_NAME = "Knowlib"            # 开机自启的注册表项名
+APP_VERSION = "1.0.7"
+
+DATA_FILES = ("config.json", "bank.db", "history.jsonl")
 
 PROVIDERS = {
     "DeepSeek 官方": {
@@ -47,24 +56,64 @@ DEFAULTS = {
 }
 
 
-def _dirs():
-    exe_dir = os.path.dirname(os.path.abspath(sys.argv[0] if getattr(sys, "frozen", False) else __file__))
-    user_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP_NAME)
-    return exe_dir, user_dir
+def exe_dir():
+    base = sys.argv[0] if getattr(sys, "frozen", False) else __file__
+    return os.path.dirname(os.path.abspath(base))
+
+
+def appdata_dir():
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, BRAND)
+
+
+def is_portable():
+    """exe 同目录放一个 portable.flag 就切成便携模式（数据跟程序走）。"""
+    try:
+        return os.path.exists(os.path.join(exe_dir(), "portable.flag"))
+    except Exception:
+        return False
+
+
+def data_dir():
+    if is_portable():
+        return exe_dir()
+    d = appdata_dir()
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _migrate_once():
+    """把旧位置的数据复制到新目录（目标已存在就不动，绝不删除源文件）。"""
+    if is_portable():
+        return
+    dst = appdata_dir()
+    candidates = [exe_dir(),
+                  os.path.join(os.environ.get("APPDATA", ""), APP_NAME)]
+    done = getattr(_migrate_once, "_done", False)
+    if done:
+        return
+    _migrate_once._done = True
+    for src in candidates:
+        try:
+            if not src or not os.path.isdir(src):
+                continue
+            if os.path.abspath(src) == os.path.abspath(dst):
+                continue
+            for name in DATA_FILES:
+                s = os.path.join(src, name)
+                d = os.path.join(dst, name)
+                if os.path.exists(s) and not os.path.exists(d):
+                    shutil.copy2(s, d)
+        except Exception:
+            continue
 
 
 def config_path():
-    exe_dir, user_dir = _dirs()
-    p1 = os.path.join(exe_dir, "config.json")
-    try:
-        if os.path.exists(p1):
-            return p1
-        open(p1, "a").close()
-        os.remove(p1)
-        return p1
-    except Exception:
-        os.makedirs(user_dir, exist_ok=True)
-        return os.path.join(user_dir, "config.json")
+    _migrate_once()
+    return os.path.join(data_dir(), "config.json")
 
 
 def load():
