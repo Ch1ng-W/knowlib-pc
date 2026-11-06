@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QDialog, QLineEdit, QComboBox, QFormLayout, QMessageBox,
     QTextBrowser, QCheckBox, QSpinBox, QSizePolicy, QFrame, QMenu, QAction,
     QListWidget, QListWidgetItem, QSystemTrayIcon, QStyle, QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect, QStackedWidget,
+    QGraphicsOpacityEffect, QStackedWidget, QScrollArea,
 )
 
 import config_store
@@ -393,18 +393,14 @@ class SettingsPage(QWidget):
         self._on_saved = on_saved
         self._on_back = on_back
         self.setObjectName("settingsPage")
-        self.setStyleSheet("QWidget#settingsPage{background:transparent;}"
-                           "QLabel{color:#dfe3ea;}"
-                           "QLineEdit,QComboBox,QSpinBox{background:#262a31;color:#e8eaed;"
-                           "border:1px solid #3a3f47;border-radius:6px;padding:6px;}"
-                           "QPushButton{background:#2f3540;color:#e8eaed;border:none;"
-                           "border-radius:6px;padding:7px 14px;}"
-                           "QPushButton:hover{background:#3a4150;}"
-                           "QPlainTextEdit{background:#262a31;color:#e8eaed;border:1px solid #3a3f47;"
-                           "border-radius:6px;}"
-                           "QCheckBox{color:#dfe3ea;}")
+        self.setStyleSheet("")
 
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+        _t = QLabel("设置")
+        _t.setObjectName("pageTitle")
+        lay.addWidget(_t)
         tip = QLabel("① 选服务商 → ② 填 Key → ③ 点「测试连接」看到成功再保存")
         tip.setStyleSheet("color:#8fb6ff;font-size:12px;")
         lay.addWidget(tip)
@@ -600,27 +596,16 @@ class HistoryPage(QWidget):
         super().__init__(parent)
         self._on_back = on_back
         self.setObjectName("historyPage")
-        self.setStyleSheet(
-            "QWidget#historyPage{background:transparent;}"
-            "QLabel{color:#dfe3ea;}"
-            "QListWidget{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
-            "border-radius:8px;padding:4px;}"
-            "QListWidget::item{padding:7px 8px;border-radius:6px;}"
-            "QListWidget::item:selected{background:#2b3546;}"
-            "QTextBrowser{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
-            "border-radius:8px;padding:10px;font-size:14px;}"
-            "QPushButton{background:#2b303a;color:#e6e9ef;border:none;border-radius:8px;"
-            "padding:7px 14px;}"
-            "QPushButton:hover{background:#39404d;}"
-            "QLineEdit{background:#262a31;color:#e8eaed;border:1px solid #3a3f47;"
-            "border-radius:6px;padding:6px;}"
-        )
+        self.setStyleSheet("")
 
         self.items = []
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+        t = QLabel("历史记录")
+        t.setObjectName("pageTitle")
+        lay.addWidget(t)
 
         top = QHBoxLayout()
         self.search = QLineEdit()
@@ -659,6 +644,7 @@ class HistoryPage(QWidget):
         self.btn_del.clicked.connect(self.clear_all)
         self.btn_close = QPushButton("← 返回")
         self.btn_close.clicked.connect(self._go_back)
+        self.btn_close.setVisible(False)
         tools.addWidget(self.btn_copy)
         tools.addWidget(self.btn_add)
         tools.addWidget(self.btn_add_all)
@@ -801,27 +787,16 @@ class BankPage(QWidget):
         super().__init__(parent)
         self._on_back = on_back
         self.setObjectName("bankPage")
-        self.setStyleSheet(
-            "QWidget#bankPage{background:transparent;}"
-            "QLabel{color:#dfe3ea;}"
-            "QListWidget{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
-            "border-radius:8px;padding:4px;}"
-            "QListWidget::item{padding:7px 8px;border-radius:6px;}"
-            "QListWidget::item:selected{background:#2b3546;}"
-            "QTextBrowser{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
-            "border-radius:8px;padding:10px;font-size:14px;}"
-            "QPushButton{background:#2b303a;color:#e6e9ef;border:none;border-radius:8px;"
-            "padding:7px 14px;}"
-            "QPushButton:hover{background:#39404d;}"
-            "QLineEdit{background:#262a31;color:#e8eaed;border:1px solid #3a3f47;"
-            "border-radius:6px;padding:6px;}"
-        )
+        self.setStyleSheet("")
 
         self.items = []
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+        t = QLabel("题库")
+        t.setObjectName("pageTitle")
+        lay.addWidget(t)
 
         top = QHBoxLayout()
         self.search = QLineEdit()
@@ -883,6 +858,7 @@ class BankPage(QWidget):
         self.btn_clear.clicked.connect(self.clear_all)
         self.btn_close = QPushButton("← 返回")
         self.btn_close.clicked.connect(self._go_back)
+        self.btn_close.setVisible(False)
         tools2.addWidget(self.btn_import)
         tools2.addWidget(self.btn_export)
         tools2.addWidget(self.btn_clear)
@@ -1236,6 +1212,106 @@ class TitleBar(QWidget):
         self._drag = None
 
 
+# ---------------------------------------------------------------- Win11 设置风格主题
+
+def system_is_light():
+    try:
+        import winreg
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                           r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        v, _ = winreg.QueryValueEx(k, "AppsUseLightTheme")
+        return bool(v)
+    except Exception:
+        return True
+
+
+LIGHT = {
+    "window": "#F3F3F3", "card": "#FFFFFF", "border": "#E5E5E5",
+    "text": "#1B1B1B", "muted": "#616161", "hover": "rgba(0,0,0,14)",
+    "sel": "rgba(0,0,0,22)", "input": "#FFFFFF", "inputBorder": "#D6D6D6",
+    "btn": "#FBFBFB", "btnBorder": "#D6D6D6", "btnHover": "#F2F2F2",
+    "accent": "#0067C0", "accentHover": "#1975C5", "accentText": "#FFFFFF",
+    "log": "#FAFAFA",
+}
+DARK = {
+    "window": "#202020", "card": "#2B2B2B", "border": "rgba(255,255,255,26)",
+    "text": "#FFFFFF", "muted": "#C5C5C5", "hover": "rgba(255,255,255,14)",
+    "sel": "rgba(255,255,255,24)", "input": "#2D2D2D", "inputBorder": "rgba(255,255,255,30)",
+    "btn": "#323232", "btnBorder": "rgba(255,255,255,26)", "btnHover": "#3A3A3A",
+    "accent": "#4CC2FF", "accentHover": "#5FC9FF", "accentText": "#00243D",
+    "log": "#262626",
+}
+
+
+def build_qss(t):
+    return (
+        "QWidget{font-family:'Segoe UI Variable Text','Microsoft YaHei UI';"
+        f"font-size:13px;color:{t['text']};}}"
+        f"QWidget#mainWin{{background:{t['window']};}}"
+        "QWidget#sidebar{background:transparent;}"
+        f"QLabel#brandName{{font-size:13px;font-weight:600;color:{t['text']};}}"
+        f"QLabel#verLabel{{font-size:11px;color:{t['muted']};padding:6px 10px;}}"
+        "QPushButton#navItem{text-align:left;padding:8px 10px;border:none;"
+        f"border-radius:4px;background:transparent;color:{t['text']};font-size:13px;}}"
+        f"QPushButton#navItem:hover{{background:{t['hover']};}}"
+        f"QPushButton#navItem:checked{{background:{t['sel']};font-weight:600;}}"
+        f"QLabel#pageTitle{{font-size:24px;font-weight:600;color:{t['text']};}}"
+        f"QFrame#card{{background:{t['card']};border:1px solid {t['border']};border-radius:8px;}}"
+        f"QLabel#sectionTitle{{font-size:14px;font-weight:600;color:{t['text']};}}"
+        f"QLabel#sub{{font-size:12px;color:{t['muted']};}}"
+        f"QPushButton{{background:{t['btn']};border:1px solid {t['btnBorder']};"
+        f"border-radius:4px;padding:6px 14px;color:{t['text']};}}"
+        f"QPushButton:hover{{background:{t['btnHover']};}}"
+        f"QPushButton:disabled{{color:{t['muted']};}}"
+        f"QPushButton#primary{{background:{t['accent']};color:{t['accentText']};"
+        "border:none;font-weight:600;}"
+        f"QPushButton#primary:hover{{background:{t['accentHover']};}}"
+        f"QPushButton#updateBtn{{background:{t['accent']};color:{t['accentText']};"
+        "border:none;font-weight:600;padding:5px 10px;}"
+        f"QLineEdit,QComboBox,QSpinBox{{background:{t['input']};color:{t['text']};"
+        f"border:1px solid {t['inputBorder']};border-radius:4px;padding:5px 8px;}}"
+        f"QPlainTextEdit{{background:{t['log']};color:{t['text']};"
+        f"border:1px solid {t['border']};border-radius:4px;padding:6px;font-size:12px;}}"
+        f"QTextBrowser{{background:{t['input']};color:{t['text']};"
+        f"border:1px solid {t['border']};border-radius:6px;padding:10px;font-size:13px;}}"
+        f"QListWidget{{background:{t['input']};color:{t['text']};"
+        f"border:1px solid {t['border']};border-radius:6px;padding:4px;}}"
+        "QListWidget::item{padding:7px 8px;border-radius:4px;}"
+        f"QListWidget::item:selected{{background:{t['sel']};color:{t['text']};}}"
+        f"QCheckBox{{color:{t['text']};}}"
+        "QScrollArea#pageScroll{background:transparent;border:none;}"
+        "QScrollArea#pageScroll > QWidget > QWidget{background:transparent;}"
+    )
+
+
+def glyph_icon(char, color, size=16):
+    """用 Segoe Fluent Icons 把字形画成 QIcon（避免按钮字体回退吃掉图标）。"""
+    pm = QPixmap(size * 2, size * 2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    f = QFont("Segoe Fluent Icons")
+    f.setPixelSize(int(size * 1.6))
+    p.setFont(f)
+    p.setPen(QColor(color))
+    p.drawText(pm.rect(), Qt.AlignCenter, char)
+    p.end()
+    pm.setDevicePixelRatio(2)
+    return QIcon(pm)
+
+
+def apply_backdrop(widget, dark=True):
+    """Win11 Mica 背景 + 深色标题栏（系统设置同款）。"""
+    try:
+        hwnd = int(widget.winId())
+        dw = ctypes.windll.dwmapi
+        v = ctypes.c_int(1 if dark else 0)      # DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+        dw.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(v), ctypes.sizeof(v))
+        v2 = ctypes.c_int(2)                    # DWMWA_SYSTEMBACKDROP_TYPE = 38, Mica = 2
+        dw.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(v2), ctypes.sizeof(v2))
+    except Exception:
+        pass
+
+
 class MainWindow(QWidget):
     hotkey = pyqtSignal(str)
 
@@ -1261,11 +1337,12 @@ class MainWindow(QWidget):
         self._fade_effects = {}
 
         self.setWindowTitle(APP_TITLE)
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.setWindowFlags(Qt.Window)
         self.setObjectName("mainWin")
-        self.resize(470, 492)
-        self.setMinimumSize(430, 404)
-        enable_native_frame(self)
+        self.theme = LIGHT if system_is_light() else DARK
+        self.resize(980, 680)
+        self.setMinimumSize(880, 560)
+        apply_backdrop(self, dark=(self.theme is DARK))
         self.setStyleSheet(
             "QWidget#mainWin{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
             "stop:0 #171a21,stop:1 #0f1115);}"
@@ -1305,38 +1382,89 @@ class MainWindow(QWidget):
             "font-size:11px;padding:7px;}"
         )
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN)
-        self.shell = QFrame()
-        self.shell.setObjectName("shell")
-        outer.addWidget(self.shell)
+        # ================= Win11 设置风格：左导航 + 右内容 =================
+        self.setStyleSheet(build_qss(self.theme))
 
-        # ⚠️ 不再用 QGraphicsDropShadowEffect：效果层 + 悬停重绘会让页面错位
-        # 阴影改在 paintEvent 里自己画（见 MainWindow.paintEvent）
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        lay = QVBoxLayout(self.shell)
-        lay.setContentsMargins(16, 4, 16, 14)
-        lay.setSpacing(11)
+        # ---- 侧边导航
+        side = QWidget()
+        side.setObjectName("sidebar")
+        side.setFixedWidth(196)
+        sl = QVBoxLayout(side)
+        sl.setContentsMargins(10, 14, 10, 10)
+        sl.setSpacing(2)
 
-        self.titlebar = TitleBar(self)
-        self.btn_settings = self.titlebar.btn_settings
-        lay.addWidget(self.titlebar)
+        brand = QHBoxLayout()
+        brand.setContentsMargins(10, 0, 10, 12)
+        brand.setSpacing(8)
+        lg = QLabel()
+        pm = QPixmap(resource_path("logo.png"))
+        if not pm.isNull():
+            lg.setPixmap(pm.scaled(18, 18, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        brand.addWidget(lg)
+        nm = QLabel("Knowlib")
+        nm.setObjectName("brandName")
+        brand.addWidget(nm)
+        brand.addStretch(1)
+        sl.addLayout(brand)
 
-        # ---- 页面容器：答题 / 历史 / 题库 / 设置 都在同一个窗口里切换
+        self.nav = {}
+        for key, icon, text in (("home", "\ue80f", "答题"),
+                                ("history", "\ue81c", "历史记录"),
+                                ("bank", "\ue8f1", "题库"),
+                                ("settings", "\ue713", "设置")):
+            b = QPushButton(text)
+            b.setIcon(glyph_icon(icon, self.theme["text"], 16))
+            b.setIconSize(QSize(16, 16))
+            b.setObjectName("navItem")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.show_page(k))
+            sl.addWidget(b)
+            self.nav[key] = b
+
+        sl.addStretch(1)
+        self.btn_update = QPushButton("发现新版本")
+        self.btn_update.setObjectName("updateBtn")
+        self.btn_update.setCursor(Qt.PointingHandCursor)
+        self.btn_update.setVisible(False)
+        self.btn_update.clicked.connect(self.start_update)
+        sl.addWidget(self.btn_update)
+        ver = QLabel(f"v{config_store.APP_VERSION}")
+        ver.setObjectName("verLabel")
+        sl.addWidget(ver)
+        root.addWidget(side)
+
+        # ---- 内容区
+        content = QWidget()
+        content.setObjectName("content")
+        cl0 = QVBoxLayout(content)
+        cl0.setContentsMargins(28, 14, 28, 20)
+        cl0.setSpacing(0)
         self.stack = QStackedWidget()
-        lay.addWidget(self.stack, 1)
+        cl0.addWidget(self.stack)
+        root.addWidget(content, 1)
+
+        # ---- 答题页
         self.page_home = QWidget()
         self.page_home.setObjectName("homePage")
         lay_home = QVBoxLayout(self.page_home)
         lay_home.setContentsMargins(0, 0, 0, 0)
-        lay_home.setSpacing(11)
+        lay_home.setSpacing(14)
 
-        # ---- 状态卡片
+        title = QLabel("答题")
+        title.setObjectName("pageTitle")
+        lay_home.addWidget(title)
+
+        # 状态卡片
         card = QFrame()
         card.setObjectName("card")
         cl = QVBoxLayout(card)
-        cl.setContentsMargins(14, 12, 14, 12)
-        cl.setSpacing(7)
+        cl.setContentsMargins(16, 14, 16, 14)
+        cl.setSpacing(8)
 
         top = QHBoxLayout()
         top.setSpacing(8)
@@ -1344,24 +1472,30 @@ class MainWindow(QWidget):
         self.dot.setFixedSize(10, 10)
         self.dot.setStyleSheet(f"background:{COLOR_IDLE};border-radius:5px;")
         self.status = QLabel("未开始")
-        self.status.setStyleSheet("font-size:16px;font-weight:700;color:#f2f4f8;")
+        self.status.setObjectName("sectionTitle")
         top.addWidget(self.dot)
         top.addWidget(self.status)
         top.addStretch(1)
         self.region_label = QLabel("")
+        self.region_label.setObjectName("sub")
         self.update_region_label()
         top.addWidget(self.region_label)
         cl.addLayout(top)
 
         self.detail = QLabel("先点「框选区域」把题目框住，再点「开始」")
-        self.detail.setStyleSheet("color:#8a93a3;font-size:12px;")
+        self.detail.setObjectName("sub")
         self.detail.setWordWrap(True)
         cl.addWidget(self.detail)
         lay_home.addWidget(card)
 
-        # ---- 操作按钮
+        # 操作卡片
+        act = QFrame()
+        act.setObjectName("card")
+        al = QVBoxLayout(act)
+        al.setContentsMargins(16, 14, 16, 14)
+        al.setSpacing(10)
         row1 = QHBoxLayout()
-        row1.setSpacing(9)
+        row1.setSpacing(10)
         self.btn_region = QPushButton("框选区域")
         self.btn_region.clicked.connect(self.select_region)
         self.btn_start = QPushButton("开始")
@@ -1370,53 +1504,61 @@ class MainWindow(QWidget):
         self.btn_start.clicked.connect(self.toggle_run)
         self.btn_shot = QPushButton("立即识别")
         self.btn_shot.clicked.connect(self.shot_once)
-        row1.addWidget(self.btn_region, 1)
-        row1.addWidget(self.btn_start, 1)
-        row1.addWidget(self.btn_shot, 1)
-        lay_home.addLayout(row1)
+        row1.addWidget(self.btn_region)
+        row1.addWidget(self.btn_start)
+        row1.addWidget(self.btn_shot)
+        row1.addStretch(1)
+        al.addLayout(row1)
 
         row2 = QHBoxLayout()
-        row2.setSpacing(9)
+        row2.setSpacing(10)
         self.btn_show = QPushButton("显示答案窗")
         self.btn_show.clicked.connect(self.toggle_overlay)
         self.btn_retry = QPushButton("重问一次")
         self.btn_retry.clicked.connect(self.ask_again)
-        self.btn_history = QPushButton("历史")
-        self.btn_history.clicked.connect(self.open_history)
-        self.btn_bank = QPushButton("题库")
-        self.btn_bank.clicked.connect(self.open_bank)
-        row2.addWidget(self.btn_show, 1)
-        row2.addWidget(self.btn_retry, 1)
-        row2.addWidget(self.btn_history, 1)
-        row2.addWidget(self.btn_bank, 1)
-        lay_home.addLayout(row2)
+        row2.addWidget(self.btn_show)
+        row2.addWidget(self.btn_retry)
+        row2.addStretch(1)
+        al.addLayout(row2)
+        lay_home.addWidget(act)
 
-        # ---- 日志
+        # 日志卡片
+        logcard = QFrame()
+        logcard.setObjectName("card")
+        ll = QVBoxLayout(logcard)
+        ll.setContentsMargins(14, 12, 14, 12)
+        ll.setSpacing(8)
+        logtitle = QLabel("运行日志")
+        logtitle.setObjectName("sectionTitle")
+        ll.addWidget(logtitle)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(200)
-        lay_home.addWidget(self.log, 1)
+        ll.addWidget(self.log, 1)
+        lay_home.addWidget(logcard, 1)
 
         self.hint = QLabel("F1 框选 · F2 暂停 · F3 立即识别 · F4 重问 · F5 答案窗"
                            "　|　关窗后在托盘后台运行")
-        self.hint.setStyleSheet("color:#5f6875;font-size:10.5px;")
+        self.hint.setObjectName("sub")
         self.hint.setWordWrap(True)
         lay_home.addWidget(self.hint)
 
-        # ---- 其他页面（同一个窗口内切换）
+        # ---- 其他页面
         self.stack.addWidget(self.page_home)
         self.page_history = HistoryPage(self, on_back=lambda: self.show_page("home"))
         self.page_bank = BankPage(self, on_back=lambda: self.show_page("home"))
-        self.page_settings = SettingsPage(self.cfg, self,
-                                          on_saved=self._on_settings_saved,
+        self.page_settings = SettingsPage(self.cfg, self, on_saved=self._on_settings_saved,
                                           on_back=lambda: self.show_page("home"))
-        for p in (self.page_history, self.page_bank, self.page_settings):
+        self.page_settings_scroll = QScrollArea()
+        self.page_settings_scroll.setObjectName("pageScroll")
+        self.page_settings_scroll.setWidgetResizable(True)
+        self.page_settings_scroll.setFrameShape(QFrame.NoFrame)
+        self.page_settings_scroll.setWidget(self.page_settings)
+        for p in (self.page_history, self.page_bank, self.page_settings_scroll):
             self.stack.addWidget(p)
-        # 页面自身的最小尺寸会让窗口在动画中"弹"到布局最小尺寸，压成 1x1 避免
-        for p in (self.page_home, self.page_history, self.page_bank, self.page_settings):
-            p.setMinimumSize(1, 1)
-        self.stack.setMinimumSize(1, 1)
         self.stack.setCurrentWidget(self.page_home)
+        self.nav["home"].setChecked(True)
+        self._page_name = "home"
 
         self.setup_hotkeys()
         self.setup_tray()
@@ -1434,7 +1576,7 @@ class MainWindow(QWidget):
         return (content[0] + SHADOW_MARGIN * 2, content[1] + SHADOW_MARGIN * 2)
 
     def show_page(self, name, animate=True):
-        """带保护的切页入口：UI 出错也绝不把整个进程带崩。"""
+        """导航切页（Win11 设置风格：即时切换，同步左侧导航高亮）。"""
         try:
             self._show_page(name, animate)
         except Exception:
@@ -1446,26 +1588,14 @@ class MainWindow(QWidget):
 
     def _show_page(self, name, animate=True):
         page = {"home": self.page_home, "history": self.page_history,
-                "bank": self.page_bank, "settings": self.page_settings}.get(name)
+                "bank": self.page_bank,
+                "settings": getattr(self, "page_settings_scroll", self.page_settings)}.get(name)
         if page is None:
             return
-        if self._page_name:
-            # 切换中（动画未跑完）时存目标尺寸，避免存到中间态
-            if (self._page_anim is not None
-                    and self._page_anim.state() == QAbstractAnimation.Running):
-                end = self._page_anim.endValue()
-                self._saved_sizes[self._page_name] = (end.width(), end.height())
-            else:
-                self._saved_sizes[self._page_name] = (self.width(), self.height())
         self.stack.setCurrentWidget(page)
         self._page_name = name
-        mw, mh = self._win_size(self.PAGE_MINS.get(name, (430, 404)))
-        self.setMinimumSize(mw, mh)
-        saved = self._saved_sizes.get(name)
-        if not saved:
-            saved = self._win_size(self.PAGE_SIZES.get(name, (470, 492)))
-        w, h = max(saved[0], mw), max(saved[1], mh)
-        self._resize_to(w, h, page, animate and self._anim_on())
+        for k, b in getattr(self, "nav", {}).items():
+            b.setChecked(k == name)
         if name == "history":
             self.page_history.reload()
         elif name == "bank":
@@ -1526,44 +1656,6 @@ class MainWindow(QWidget):
         super().changeEvent(e)
 
     def nativeEvent(self, eventType, message):
-        """无边框 + WS_THICKFRAME：不画系统标题栏，但保留系统缩放/贴边。"""
-        try:
-            if eventType == b"windows_generic_MSG":
-                msg = ctypes.wintypes.MSG.from_address(int(message))
-                if msg.message == WM_NCCALCSIZE and msg.wParam:
-                    # 客户区 = 整个窗口
-                    return True, 0
-                if msg.message == WM_NCHITTEST:
-                    r = ctypes.wintypes.RECT()
-                    ctypes.windll.user32.GetWindowRect(msg.hWnd, ctypes.byref(r))
-                    x = ctypes.c_short(int(msg.lParam) & 0xFFFF).value
-                    y = ctypes.c_short((int(msg.lParam) >> 16) & 0xFFFF).value
-                    b = 8
-                    l = x < r.left + b
-                    rr = x >= r.right - b
-                    t = y < r.top + b
-                    bt = y >= r.bottom - b
-                    hit = 0
-                    if t and l:
-                        hit = 13
-                    elif t and rr:
-                        hit = 14
-                    elif bt and l:
-                        hit = 16
-                    elif bt and rr:
-                        hit = 17
-                    elif l:
-                        hit = 10
-                    elif rr:
-                        hit = 11
-                    elif t:
-                        hit = 12
-                    elif bt:
-                        hit = 15
-                    if hit:
-                        return True, hit
-        except Exception:
-            pass
         return super().nativeEvent(eventType, message)
 
     def _pop_in(self):
@@ -1686,8 +1778,8 @@ class MainWindow(QWidget):
             return
         if r.get("has_update"):
             self._update_info = r
-            self.titlebar.btn_update.setText(f"更新 {r['latest']}")
-            self.titlebar.btn_update.setVisible(True)
+            self.btn_update.setText(f"更新 {r['latest']}")
+            self.btn_update.setVisible(True)
             self.add_log(f"发现新版本 v{r['latest']}（当前 v{updater.current_version()}）")
             if silent and self.tray:
                 self.tray.showMessage(
@@ -1710,13 +1802,13 @@ class MainWindow(QWidget):
             updater.run_installer(path)
         except Exception as e:
             self.add_log(f"启动安装失败：{e}")
-            self.titlebar.btn_update.setEnabled(True)
+            self.btn_update.setEnabled(True)
             return
         QTimer.singleShot(400, self.quit_app)
 
     def _on_dl_fail(self, msg):
         self.add_log("下载失败：" + msg)
-        self.titlebar.btn_update.setEnabled(True)
+        self.btn_update.setEnabled(True)
 
     def start_update(self):
         info = getattr(self, "_update_info", None)
@@ -1728,7 +1820,7 @@ class MainWindow(QWidget):
                "安装时本程序会自动关闭，装完重新打开即可。")
         if not ask_yes(self, "更新 Knowlib", tip):
             return
-        self.titlebar.btn_update.setEnabled(False)
+        self.btn_update.setEnabled(False)
         url = info["url"]
 
         class Dl(QThread):
