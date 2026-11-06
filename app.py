@@ -19,6 +19,8 @@ from PyQt5.QtWidgets import (
 )
 
 import config_store
+import question_bank as qbank
+import updater
 
 APP_TITLE = "Knowlib"
 COLOR_OK = "#3ddc84"
@@ -351,6 +353,14 @@ class SettingsDialog(QDialog):
         self.autostart.setChecked(config_store.autostart_enabled())
         form.addRow("启动", self.autostart)
 
+        self.bank_first = QCheckBox("优先查本地题库（命中不花 token）")
+        self.bank_first.setChecked(bool(self.cfg.get("bank_first", True)))
+        form.addRow("题库", self.bank_first)
+
+        self.check_update = QCheckBox("启动时检查更新")
+        self.check_update.setChecked(bool(self.cfg.get("check_update", True)))
+        form.addRow("更新", self.check_update)
+
         lay.addLayout(form)
 
         self.test_result = QLabel("尚未测试")
@@ -360,11 +370,14 @@ class SettingsDialog(QDialog):
         row = QHBoxLayout()
         self.btn_test = QPushButton("测试连接")
         self.btn_test.clicked.connect(self.do_test)
+        self.btn_upd = QPushButton("检查更新")
+        self.btn_upd.clicked.connect(self.do_check_update)
         self.btn_save = QPushButton("保存")
         self.btn_save.clicked.connect(self.do_save)
         self.btn_cancel = QPushButton("取消")
         self.btn_cancel.clicked.connect(self.reject)
         row.addWidget(self.btn_test)
+        row.addWidget(self.btn_upd)
         row.addStretch(1)
         row.addWidget(self.btn_cancel)
         row.addWidget(self.btn_save)
@@ -397,6 +410,8 @@ class SettingsDialog(QDialog):
         c["model"] = self.model.text().strip()
         c["scan_interval"] = self.interval.value() / 1000.0
         c["prompt"] = self.prompt.toPlainText().strip()
+        c["bank_first"] = self.bank_first.isChecked()
+        c["check_update"] = self.check_update.isChecked()
         return c
 
     def do_test(self):
@@ -417,6 +432,24 @@ class SettingsDialog(QDialog):
         else:
             self.test_result.setText(f"❌ {msg}")
             self.test_result.setStyleSheet(f"color:{COLOR_ERR};")
+
+    def do_check_update(self):
+        self.btn_upd.setEnabled(False)
+        self.test_result.setText("正在查 GitHub…")
+        self.test_result.setStyleSheet(f"color:{COLOR_IDLE};")
+        QApplication.processEvents()
+        r = updater.check()
+        self.btn_upd.setEnabled(True)
+        if not r.get("ok"):
+            self.test_result.setText("检查失败：" + str(r.get("error"))[:80])
+            self.test_result.setStyleSheet(f"color:{COLOR_ERR};")
+            return
+        if r.get("has_update"):
+            self.test_result.setText(f"发现新版本 v{r['latest']}（当前 v{updater.current_version()}）")
+            self.test_result.setStyleSheet(f"color:{COLOR_OK};")
+        else:
+            self.test_result.setText(f"已是最新版本 v{updater.current_version()} ✓")
+            self.test_result.setStyleSheet(f"color:{COLOR_OK};")
 
     def do_save(self):
         c = self._collect()
@@ -569,6 +602,161 @@ class HistoryDialog(QDialog):
         self.reload()
 
 
+# ---------------------------------------------------------------- 本地题库窗
+class BankDialog(QDialog):
+    """本地题库：检索 / 复制 / 删除 / 导入导出。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("本地题库 · Knowlib")
+        self.resize(860, 580)
+        self.setStyleSheet(
+            "QDialog{background:#15171c;}"
+            "QLabel{color:#dfe3ea;}"
+            "QListWidget{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
+            "border-radius:8px;padding:4px;}"
+            "QListWidget::item{padding:7px 8px;border-radius:6px;}"
+            "QListWidget::item:selected{background:#2b3546;}"
+            "QTextBrowser{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
+            "border-radius:8px;padding:10px;font-size:14px;}"
+            "QPushButton{background:#2b303a;color:#e6e9ef;border:none;border-radius:8px;"
+            "padding:7px 14px;}"
+            "QPushButton:hover{background:#39404d;}"
+            "QLineEdit{background:#262a31;color:#e8eaed;border:1px solid #3a3f47;"
+            "border-radius:6px;padding:6px;}"
+        )
+
+        self.items = []
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(10)
+
+        top = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜题目或答案…（回车刷新）")
+        self.search.returnPressed.connect(self.reload)
+        self.stat = QLabel("")
+        self.stat.setStyleSheet("color:#7f8896;font-size:12px;")
+        top.addWidget(self.search, 1)
+        top.addWidget(self.stat)
+        lay.addLayout(top)
+
+        body = QHBoxLayout()
+        self.list = QListWidget()
+        self.list.setFixedWidth(280)
+        self.list.currentRowChanged.connect(self.show_item)
+        body.addWidget(self.list)
+
+        right = QVBoxLayout()
+        self.view = QTextBrowser()
+        right.addWidget(self.view, 1)
+        tools1 = QHBoxLayout()
+        self.btn_copy = QPushButton("复制答案")
+        self.btn_copy.clicked.connect(self.copy_current)
+        self.btn_del = QPushButton("删除这条")
+        self.btn_del.clicked.connect(self.delete_current)
+        tools1.addWidget(self.btn_copy)
+        tools1.addWidget(self.btn_del)
+        tools1.addStretch(1)
+        right.addLayout(tools1)
+
+        tools2 = QHBoxLayout()
+        self.btn_import = QPushButton("导入 CSV")
+        self.btn_import.clicked.connect(self.import_csv)
+        self.btn_export = QPushButton("导出 CSV")
+        self.btn_export.clicked.connect(self.export_csv)
+        self.btn_clear = QPushButton("清空题库")
+        self.btn_clear.clicked.connect(self.clear_all)
+        self.btn_close = QPushButton("关闭")
+        self.btn_close.clicked.connect(self.accept)
+        tools2.addWidget(self.btn_import)
+        tools2.addWidget(self.btn_export)
+        tools2.addWidget(self.btn_clear)
+        tools2.addStretch(1)
+        tools2.addWidget(self.btn_close)
+        right.addLayout(tools2)
+        body.addLayout(right, 1)
+        lay.addLayout(body, 1)
+
+        self.reload()
+
+    def reload(self):
+        kw = self.search.text().strip()
+        self.items = qbank.items(kw, limit=500)
+        self.list.clear()
+        for it in self.items:
+            q1 = " ".join((it["q_text"] or "").split())[:24] or "（无题目）"
+            mark = "" if it["source"] == "ai" else f"·{it['source']}"
+            item = QListWidgetItem(f"[{it['hits']}] {q1}{mark}")
+            item.setData(Qt.UserRole, it)
+            self.list.addItem(item)
+        st = qbank.stats()
+        self.stat.setText(f"共 {st['count']} 题 · 命中 {st['hits']} 次")
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        else:
+            self.view.setHtml("<div style='color:#7f8896;padding:20px'>"
+                              "题库还是空的。识别并答对一次后会自动存进来。</div>")
+
+    def show_item(self, row):
+        if row < 0 or row >= self.list.count():
+            return
+        it = self.list.item(row).data(Qt.UserRole) or {}
+        esc = HistoryDialog._esc
+        html = (
+            f"<div style='color:#7f8896;font-size:12px'>存于 {it.get('created','')}"
+            f" · 命中 {it.get('hits',0)} 次</div>"
+            f"<div style='color:#8fb6ff;font-size:12px;margin-top:10px'>题目</div>"
+            f"<div style='white-space:pre-wrap;margin-bottom:14px'>{esc(it.get('q_text',''))}</div>"
+            f"<div style='color:#8fb6ff;font-size:12px'>答案</div>"
+            f"<div style='white-space:pre-wrap;color:#7ee787;font-size:16px;"
+            f"margin-bottom:10px'>{esc(it.get('answer',''))}</div>"
+            f"<div style='white-space:pre-wrap;color:#c9d1d9'>{esc(it.get('solution',''))}</div>"
+        )
+        self.view.setHtml(html)
+
+    def copy_current(self):
+        row = self.list.currentRow()
+        if row < 0:
+            return
+        it = self.list.item(row).data(Qt.UserRole) or {}
+        QApplication.clipboard().setText(
+            f"答案：{it.get('answer','')}\n解析：{it.get('solution','')}")
+        self.stat.setText("已复制✓")
+
+    def delete_current(self):
+        row = self.list.currentRow()
+        if row < 0:
+            return
+        it = self.list.item(row).data(Qt.UserRole) or {}
+        qbank.delete(it.get("id"))
+        self.reload()
+
+    def export_csv(self):
+        from PyQt5.QtWidgets import QFileDialog
+        p, _ = QFileDialog.getSaveFileName(self, "导出题库", "knowlib-bank.csv", "CSV (*.csv)")
+        if not p:
+            return
+        ok, n = qbank.export_csv(p)
+        self.stat.setText(f"已导出 {n} 题 ✓" if ok else f"导出失败：{n}")
+
+    def import_csv(self):
+        from PyQt5.QtWidgets import QFileDialog
+        p, _ = QFileDialog.getOpenFileName(self, "导入题库", "", "CSV (*.csv)")
+        if not p:
+            return
+        ok, n = qbank.import_csv(p)
+        self.stat.setText(f"已导入 {n} 题 ✓" if ok else f"导入失败：{n}")
+        self.reload()
+
+    def clear_all(self):
+        if QMessageBox.question(self, "清空题库", "确定删除全部题目？不可恢复。") != QMessageBox.Yes:
+            return
+        qbank.clear()
+        self.reload()
+
+
 # ---------------------------------------------------------------- 扫描线程
 class ScanWorker(QObject):
     state = pyqtSignal(str, str)      # (文字, 颜色)
@@ -591,6 +779,7 @@ class ScanWorker(QObject):
         self.last_q_key = ""
         self.idle_rounds = 0
         self.ocr = None
+        self.bank_used = False
 
     def ensure_ocr(self):
         if self.ocr is None:
@@ -662,6 +851,21 @@ class ScanWorker(QObject):
 
                 self.ocr_done.emit(text)
                 self.detail.emit(f"OCR {ocr_cost:.2f}s · {len(text)} 字 · 置信 {conf:.2f}")
+
+                # —— 先查本地题库（命中就秒回，不花 token）
+                if self.cfg.get("bank_first", True):
+                    hit = qbank.lookup(text)
+                    if hit:
+                        self.bank_used = True
+                        full = f"答案：{hit['answer']}\n解析：{hit['solution']}"
+                        self.finished_answer.emit(full, 0.0)
+                        self.detail.emit(
+                            f"题库命中（相似度 {hit['score']:.2f}）· 未调用 AI")
+                        self.state.emit("本地题库命中", COLOR_OK)
+                        time.sleep(max(0.3, float(self.cfg.get("scan_interval", 1.2))))
+                        continue
+                self.bank_used = False
+
                 self.state.emit("请求 AI…", COLOR_ACCENT)
 
                 client = ocr_ai.AiClient(self.cfg)
@@ -715,6 +919,13 @@ class TitleBar(QWidget):
         self.btn_settings.setCursor(Qt.PointingHandCursor)
         self.btn_settings.clicked.connect(win.open_settings)
         lay.addWidget(self.btn_settings)
+
+        self.btn_update = QPushButton("更新")
+        self.btn_update.setObjectName("updatebtn")
+        self.btn_update.setCursor(Qt.PointingHandCursor)
+        self.btn_update.setVisible(False)
+        self.btn_update.clicked.connect(win.start_update)
+        lay.addWidget(self.btn_update)
 
         self.btn_min = QPushButton("—")
         self.btn_min.setObjectName("winbtn")
@@ -785,6 +996,11 @@ class MainWindow(QWidget):
             "stop:0 #eb6679,stop:1 #d54a64);}"
             "QPushButton#ghost{background:transparent;color:#9aa4b2;padding:5px 9px;font-size:12px;}"
             "QPushButton#ghost:hover{background:rgba(255,255,255,20);color:#e6e9ef;}"
+            "QPushButton#updatebtn{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #2ecc71,stop:1 #22a35a);color:#ffffff;font-size:11px;"
+            "border-radius:9px;padding:4px 9px;font-weight:600;}"
+            "QPushButton#updatebtn:hover{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #3ddc84,stop:1 #27b566);}"
             "QPushButton#winbtn{background:transparent;color:#9aa4b2;font-size:14px;"
             "border-radius:7px;padding:0;}"
             "QPushButton#winbtn:hover{background:rgba(255,255,255,22);color:#ffffff;}"
@@ -866,11 +1082,14 @@ class MainWindow(QWidget):
         self.btn_show.clicked.connect(self.toggle_overlay)
         self.btn_retry = QPushButton("重问一次")
         self.btn_retry.clicked.connect(self.ask_again)
-        self.btn_history = QPushButton("历史记录")
+        self.btn_history = QPushButton("历史")
         self.btn_history.clicked.connect(self.open_history)
+        self.btn_bank = QPushButton("题库")
+        self.btn_bank.clicked.connect(self.open_bank)
         row2.addWidget(self.btn_show, 1)
         row2.addWidget(self.btn_retry, 1)
         row2.addWidget(self.btn_history, 1)
+        row2.addWidget(self.btn_bank, 1)
         lay.addLayout(row2)
 
         # ---- 日志
@@ -943,6 +1162,101 @@ class MainWindow(QWidget):
     def open_history(self):
         dlg = HistoryDialog(self)
         dlg.exec_()
+
+    def open_bank(self):
+        dlg = BankDialog(self)
+        dlg.exec_()
+
+    # -------- 自动更新
+    def check_updates_async(self, silent=True):
+        if getattr(self, "_upd_busy", False):
+            return
+        self._upd_busy = True
+        if not silent:
+            self.add_log("正在检查更新…")
+
+        class Check(QThread):
+            done = pyqtSignal(dict)
+
+            def run(self):
+                self.done.emit(updater.check())
+
+        self._uc = Check(self)
+        self._uc.done.connect(lambda r: self._on_update_result(r, silent))
+        self._uc.start()
+
+    def _on_update_result(self, r, silent):
+        self._upd_busy = False
+        if not r.get("ok"):
+            if not silent:
+                self.add_log("检查更新失败：" + str(r.get("error"))[:80])
+            return
+        if r.get("has_update"):
+            self._update_info = r
+            self.titlebar.btn_update.setText(f"更新 {r['latest']}")
+            self.titlebar.btn_update.setVisible(True)
+            self.add_log(f"发现新版本 v{r['latest']}（当前 v{updater.current_version()}）")
+            if silent and self.tray:
+                self.tray.showMessage(
+                    "发现新版本", f"v{r['latest']} 可用，点窗口右上角「更新」",
+                    QSystemTrayIcon.Information, 4000)
+        elif not silent:
+            self.add_log(f"已是最新版本 v{updater.current_version()}")
+
+    def _on_dl_progress(self, got, total):
+        if not total:
+            return
+        pct = int(got * 100 / total)
+        if pct // 10 != getattr(self, "_dl_pct", -1) // 10:
+            self._dl_pct = pct
+            self.add_log(f"下载中 {pct}%（{got/1048576:.0f}/{total/1048576:.0f}MB）")
+
+    def _on_dl_done(self, path):
+        self.add_log("下载完成，正在启动安装…")
+        try:
+            updater.run_installer(path)
+        except Exception as e:
+            self.add_log(f"启动安装失败：{e}")
+            self.titlebar.btn_update.setEnabled(True)
+            return
+        QTimer.singleShot(400, self.quit_app)
+
+    def _on_dl_fail(self, msg):
+        self.add_log("下载失败：" + msg)
+        self.titlebar.btn_update.setEnabled(True)
+
+    def start_update(self):
+        info = getattr(self, "_update_info", None)
+        if not info or not info.get("url"):
+            self.check_updates_async(silent=False)
+            return
+        size_mb = (info.get("size") or 0) / 1048576
+        tip = (f"下载 v{info['latest']}（{size_mb:.0f}MB）并安装？\n"
+               "安装时本程序会自动关闭，装完重新打开即可。")
+        if QMessageBox.question(self, "更新 Knowlib", tip) != QMessageBox.Yes:
+            return
+        self.titlebar.btn_update.setEnabled(False)
+        url = info["url"]
+
+        class Dl(QThread):
+            prog = pyqtSignal(int, int)
+            done = pyqtSignal(str)
+            fail = pyqtSignal(str)
+
+            def run(self):
+                try:
+                    p = updater.download(url, on_progress=lambda a, b: self.prog.emit(a, b))
+                    self.done.emit(p)
+                except Exception as e:
+                    self.fail.emit(f"{type(e).__name__}: {e}")
+
+        self._dl_pct = -1
+        self._dl = Dl(self)
+        self._dl.prog.connect(self._on_dl_progress)
+        self._dl.done.connect(self._on_dl_done)
+        self._dl.fail.connect(self._on_dl_fail)
+        self.add_log("开始下载更新…")
+        self._dl.start()
 
     # -------- 状态
     def set_state(self, text, color):
@@ -1125,8 +1439,21 @@ class MainWindow(QWidget):
         if not self.overlay.isVisible():
             self.overlay.place_avoiding(self.region)
             self.overlay.show()
-        self.overlay.foot.setText(f"{cost:.2f}s · 深色可拖动")
+        from_bank = bool(self.worker is not None and getattr(self.worker, "bank_used", False))
+        if from_bank:
+            self.overlay.foot.setText("来自本地题库 · 未消耗 token")
+        else:
+            self.overlay.foot.setText(f"{cost:.2f}s · 深色可拖动")
         self.overlay.raise_()
+
+        # 存本地题库（题库命中的不重复存）
+        if not from_bank and self.last_question:
+            try:
+                if qbank.save(self.last_question, full):
+                    self.add_log("已存入本地题库")
+            except Exception:
+                pass
+
         # 存历史（jsonl）
         try:
             import json
@@ -1249,6 +1576,10 @@ def main():
 
     if not cfg.get("api_key"):
         QTimer.singleShot(300, w.open_settings)
+
+    if cfg.get("check_update", True) and "--tray" not in sys.argv:
+        QTimer.singleShot(2500, lambda: w.check_updates_async(True))
+
     sys.exit(app.exec_())
 
 

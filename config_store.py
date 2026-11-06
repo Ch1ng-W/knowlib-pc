@@ -5,7 +5,7 @@ import sys
 
 APP_NAME = "XiaoTuanSouTi"
 REG_NAME = "Knowlib"        # 开机自启的注册表项名
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 
 PROVIDERS = {
     "DeepSeek 官方": {
@@ -34,6 +34,8 @@ DEFAULTS = {
     "max_tokens": 900,
     "scan_interval": 1.2,
     "dedupe": True,
+    "bank_first": True,
+    "check_update": True,
     "region": {"left": 100, "top": 100, "width": 900, "height": 420},
     "prompt": (
         "你是解题助手。下面是一道题的截图文字识别结果。请：\n"
