@@ -5,7 +5,7 @@ import sys
 
 APP_NAME = "XiaoTuanSouTi"
 REG_NAME = "Knowlib"        # 开机自启的注册表项名
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 
 PROVIDERS = {
     "DeepSeek 官方": {

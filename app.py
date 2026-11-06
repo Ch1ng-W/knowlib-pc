@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QDialog, QLineEdit, QComboBox, QFormLayout, QMessageBox,
     QTextBrowser, QCheckBox, QSpinBox, QSizePolicy, QFrame, QMenu, QAction,
-    QListWidget, QListWidgetItem, QSystemTrayIcon, QStyle,
+    QListWidget, QListWidgetItem, QSystemTrayIcon, QStyle, QGraphicsDropShadowEffect,
 )
 
 import config_store
@@ -96,8 +96,10 @@ class AnswerOverlay(QWidget):
         root = QFrame(self)
         root.setObjectName("card")
         root.setStyleSheet(
-            "#card{background:rgba(22,24,29,235);border-radius:14px;border:1px solid rgba(255,255,255,28);}"
-            "QLabel{color:#e8eaed;}"
+            "#card{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(24,27,34,244),stop:1 rgba(16,18,23,246));"
+            "border-radius:16px;border:1px solid rgba(255,255,255,30);}"
+            "QLabel{color:#e8eaed;background:transparent;}"
             "QPushButton{color:#dfe3ea;background:rgba(255,255,255,18);border:none;"
             "border-radius:8px;padding:5px 10px;}"
             "QPushButton:hover{background:rgba(255,255,255,34);}"
@@ -131,7 +133,9 @@ class AnswerOverlay(QWidget):
         self.answer.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.answer.setStyleSheet(
             "font-size:34px;font-weight:800;color:#7ee787;"
-            "padding:10px 12px;border-radius:10px;background:rgba(126,231,135,18);"
+            "padding:10px 14px;border-radius:12px;"
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 rgba(126,231,135,26),stop:1 rgba(126,231,135,10));"
         )
         self.answer.setMinimumHeight(56)
         inner.addWidget(self.answer)
@@ -675,6 +679,69 @@ class ScanWorker(QObject):
 
 
 # ---------------------------------------------------------------- 主窗口
+class TitleBar(QWidget):
+    """无边框窗口的自绘标题栏：拖动 / 设置 / 最小化 / 关闭（收托盘）。"""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self._win = win
+        self._drag = None
+        self.setFixedHeight(48)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(16, 0, 10, 0)
+        lay.setSpacing(8)
+
+        logo = QLabel("K")
+        logo.setFixedSize(24, 24)
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5b9dff,stop:1 #7b61ff);"
+            "border-radius:8px;color:#ffffff;font-weight:800;font-size:13px;")
+        lay.addWidget(logo)
+
+        name = QLabel(APP_TITLE)
+        name.setStyleSheet("color:#eef1f6;font-size:13px;font-weight:600;letter-spacing:.4px;")
+        lay.addWidget(name)
+
+        ver = QLabel(f"v{config_store.APP_VERSION}")
+        ver.setStyleSheet("color:#8a93a3;background:rgba(255,255,255,10);"
+                          "border-radius:9px;padding:2px 8px;font-size:10px;")
+        lay.addWidget(ver)
+        lay.addStretch(1)
+
+        self.btn_settings = QPushButton("⚙  设置")
+        self.btn_settings.setObjectName("ghost")
+        self.btn_settings.setCursor(Qt.PointingHandCursor)
+        self.btn_settings.clicked.connect(win.open_settings)
+        lay.addWidget(self.btn_settings)
+
+        self.btn_min = QPushButton("—")
+        self.btn_min.setObjectName("winbtn")
+        self.btn_min.setFixedSize(30, 26)
+        self.btn_min.setCursor(Qt.PointingHandCursor)
+        self.btn_min.clicked.connect(win.showMinimized)
+        lay.addWidget(self.btn_min)
+
+        self.btn_close = QPushButton("×")
+        self.btn_close.setObjectName("closebtn")
+        self.btn_close.setFixedSize(30, 26)
+        self.btn_close.setCursor(Qt.PointingHandCursor)
+        self.btn_close.clicked.connect(win.close)
+        lay.addWidget(self.btn_close)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag = e.globalPos() - self._win.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, e):
+        if self._drag is not None and e.buttons() & Qt.LeftButton:
+            self._win.move(e.globalPos() - self._drag)
+
+    def mouseReleaseEvent(self, e):
+        self._drag = None
+
+
 class MainWindow(QWidget):
     hotkey = pyqtSignal(str)
 
@@ -692,77 +759,131 @@ class MainWindow(QWidget):
         self.tray = None
 
         self.setWindowTitle(APP_TITLE)
-        self.setFixedSize(430, 356)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(470, 492)
         self.setStyleSheet(
-            "QWidget{background:#15171c;color:#e6e9ef;font-family:'Microsoft YaHei';}"
-            "QLabel{color:#e6e9ef;}"
-            "QPushButton{background:#2b303a;color:#e6e9ef;border:none;border-radius:8px;padding:8px 10px;font-size:13px;}"
-            "QPushButton:hover{background:#39404d;}"
-            "QPushButton:disabled{color:#6b7280;background:#22262d;}"
-            "QPlainTextEdit{background:#101216;color:#9aa4b2;border:1px solid #262a31;"
-            "border-radius:8px;font-size:11px;}"
+            "QWidget{color:#e6e9ef;font-family:'Microsoft YaHei';}"
+            "QFrame#shell{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 #171a21,stop:1 #0f1115);"
+            "border-radius:16px;border:1px solid rgba(255,255,255,20);}"
+            "QFrame#card{background:rgba(255,255,255,9);"
+            "border:1px solid rgba(255,255,255,14);border-radius:12px;}"
+            "QLabel{color:#e6e9ef;background:transparent;}"
+            "QPushButton{background:rgba(255,255,255,14);color:#e6e9ef;border:none;"
+            "border-radius:9px;padding:9px 10px;font-size:13px;}"
+            "QPushButton:hover{background:rgba(255,255,255,26);}"
+            "QPushButton:pressed{background:rgba(255,255,255,36);}"
+            "QPushButton:disabled{color:#6b7280;background:rgba(255,255,255,6);}"
+            "QPushButton#primary{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #4f8dfd,stop:1 #7b61ff);color:#ffffff;font-weight:600;}"
+            "QPushButton#primary:hover{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #639bff,stop:1 #8a74ff);}"
+            "QPushButton#danger{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #e0556a,stop:1 #c93c57);color:#ffffff;font-weight:600;}"
+            "QPushButton#danger:hover{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #eb6679,stop:1 #d54a64);}"
+            "QPushButton#ghost{background:transparent;color:#9aa4b2;padding:5px 9px;font-size:12px;}"
+            "QPushButton#ghost:hover{background:rgba(255,255,255,20);color:#e6e9ef;}"
+            "QPushButton#winbtn{background:transparent;color:#9aa4b2;font-size:14px;"
+            "border-radius:7px;padding:0;}"
+            "QPushButton#winbtn:hover{background:rgba(255,255,255,22);color:#ffffff;}"
+            "QPushButton#closebtn{background:transparent;color:#9aa4b2;font-size:16px;"
+            "border-radius:7px;padding:0;}"
+            "QPushButton#closebtn:hover{background:#e0435c;color:#ffffff;}"
+            "QPlainTextEdit{background:rgba(0,0,0,80);color:#98a2b3;"
+            "border:1px solid rgba(255,255,255,10);border-radius:11px;"
+            "font-size:11px;padding:7px;}"
         )
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.shell = QFrame()
+        self.shell.setObjectName("shell")
+        outer.addWidget(self.shell)
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(38)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(0, 0, 0, 160))
+        self.shell.setGraphicsEffect(shadow)
+
+        lay = QVBoxLayout(self.shell)
+        lay.setContentsMargins(16, 4, 16, 14)
+        lay.setSpacing(11)
+
+        self.titlebar = TitleBar(self)
+        self.btn_settings = self.titlebar.btn_settings
+        lay.addWidget(self.titlebar)
+
+        # ---- 状态卡片
+        card = QFrame()
+        card.setObjectName("card")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(14, 12, 14, 12)
+        cl.setSpacing(7)
 
         top = QHBoxLayout()
-        self.dot = QLabel("●")
-        self.dot.setStyleSheet(f"color:{COLOR_IDLE};font-size:16px;")
+        top.setSpacing(8)
+        self.dot = QLabel()
+        self.dot.setFixedSize(10, 10)
+        self.dot.setStyleSheet(f"background:{COLOR_IDLE};border-radius:5px;")
         self.status = QLabel("未开始")
-        self.status.setStyleSheet("font-size:15px;font-weight:600;")
+        self.status.setStyleSheet("font-size:16px;font-weight:700;color:#f2f4f8;")
         top.addWidget(self.dot)
         top.addWidget(self.status)
         top.addStretch(1)
-        self.btn_settings = QPushButton("设置")
-        self.btn_settings.clicked.connect(self.open_settings)
-        top.addWidget(self.btn_settings)
-        lay.addLayout(top)
+        self.region_label = QLabel("")
+        self.update_region_label()
+        top.addWidget(self.region_label)
+        cl.addLayout(top)
 
         self.detail = QLabel("先点「框选区域」把题目框住，再点「开始」")
-        self.detail.setStyleSheet("color:#8a8f98;font-size:12px;")
+        self.detail.setStyleSheet("color:#8a93a3;font-size:12px;")
         self.detail.setWordWrap(True)
-        lay.addWidget(self.detail)
+        cl.addWidget(self.detail)
+        lay.addWidget(card)
 
+        # ---- 操作按钮
         row1 = QHBoxLayout()
+        row1.setSpacing(9)
         self.btn_region = QPushButton("框选区域")
         self.btn_region.clicked.connect(self.select_region)
         self.btn_start = QPushButton("开始")
+        self.btn_start.setObjectName("primary")
+        self.btn_start.setCursor(Qt.PointingHandCursor)
         self.btn_start.clicked.connect(self.toggle_run)
         self.btn_shot = QPushButton("立即识别")
         self.btn_shot.clicked.connect(self.shot_once)
-        row1.addWidget(self.btn_region)
-        row1.addWidget(self.btn_start)
-        row1.addWidget(self.btn_shot)
+        row1.addWidget(self.btn_region, 1)
+        row1.addWidget(self.btn_start, 1)
+        row1.addWidget(self.btn_shot, 1)
         lay.addLayout(row1)
 
         row2 = QHBoxLayout()
+        row2.setSpacing(9)
         self.btn_show = QPushButton("显示答案窗")
         self.btn_show.clicked.connect(self.toggle_overlay)
         self.btn_retry = QPushButton("重问一次")
         self.btn_retry.clicked.connect(self.ask_again)
-        self.btn_history = QPushButton("历史")
+        self.btn_history = QPushButton("历史记录")
         self.btn_history.clicked.connect(self.open_history)
-        row2.addWidget(self.btn_show)
-        row2.addWidget(self.btn_retry)
-        row2.addWidget(self.btn_history)
+        row2.addWidget(self.btn_show, 1)
+        row2.addWidget(self.btn_retry, 1)
+        row2.addWidget(self.btn_history, 1)
         lay.addLayout(row2)
 
+        # ---- 日志
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(200)
         lay.addWidget(self.log, 1)
 
-        self.hint = QLabel("热键：F1 框选 · F2 暂停/继续 · F3 立即识别 · F4 重问 · F5 显示/隐藏答案窗\n"
-                            f"v{config_store.APP_VERSION} · 关窗后仍在托盘后台运行")
-        self.hint.setStyleSheet("color:#6b7280;font-size:11px;")
+        self.hint = QLabel("F1 框选 · F2 暂停 · F3 立即识别 · F4 重问 · F5 答案窗"
+                           "　|　关窗后在托盘后台运行")
+        self.hint.setStyleSheet("color:#5f6875;font-size:10.5px;")
         self.hint.setWordWrap(True)
         lay.addWidget(self.hint)
-
-        self.region_label = QLabel("")
-        self.update_region_label()
-        lay.insertWidget(2, self.region_label)
 
         self.setup_hotkeys()
         self.setup_tray()
@@ -826,7 +947,12 @@ class MainWindow(QWidget):
     # -------- 状态
     def set_state(self, text, color):
         self.status.setText(text)
-        self.dot.setStyleSheet(f"color:{color};font-size:16px;")
+        self.dot.setStyleSheet(f"background:{color};border-radius:5px;")
+
+    def _set_start_look(self, running):
+        self.btn_start.setObjectName("danger" if running else "primary")
+        self.btn_start.style().unpolish(self.btn_start)
+        self.btn_start.style().polish(self.btn_start)
 
     def add_log(self, text):
         self.log.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {text}")
@@ -834,11 +960,17 @@ class MainWindow(QWidget):
     def update_region_label(self):
         if self.region and self.region.get("width"):
             r = self.region
-            self.region_label.setText(
-                f"监控区域：{r['width']}×{r['height']} @ ({r['left']},{r['top']})")
+            self.region_label.setText(f"{r['width']}×{r['height']}")
+            self.region_label.setToolTip(f"监控区域 @ ({r['left']},{r['top']})")
+            self.region_label.setStyleSheet(
+                "color:#8fbcff;background:rgba(91,157,255,26);border-radius:9px;"
+                "padding:2px 8px;font-size:10.5px;")
         else:
-            self.region_label.setText("监控区域：未设置")
-        self.region_label.setStyleSheet("color:#7f8896;font-size:11px;")
+            self.region_label.setText("未设置区域")
+            self.region_label.setToolTip("")
+            self.region_label.setStyleSheet(
+                "color:#8a93a3;background:rgba(255,255,255,10);border-radius:9px;"
+                "padding:2px 8px;font-size:10.5px;")
 
     # -------- 热键
     def _on_hotkey(self, name):
@@ -925,6 +1057,7 @@ class MainWindow(QWidget):
 
         self.thread.start()
         self.btn_start.setText("停止")
+        self._set_start_look(True)
         if self.tray:
             self.act_run.setText("停止扫描")
         self.add_log("已开始扫描")
@@ -939,6 +1072,7 @@ class MainWindow(QWidget):
         self.thread = None
         self.worker = None
         self.btn_start.setText("开始")
+        self._set_start_look(False)
         if self.tray:
             self.act_run.setText("开始扫描")
         self.set_state("已停止", COLOR_IDLE)
