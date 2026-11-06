@@ -14,7 +14,8 @@ from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QBrush, QIcon, QPixmap, Q
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QDialog, QLineEdit, QComboBox, QFormLayout, QMessageBox,
-    QTextBrowser, QCheckBox, QSpinBox, QSizePolicy, QFrame,
+    QTextBrowser, QCheckBox, QSpinBox, QSizePolicy, QFrame, QMenu, QAction,
+    QListWidget, QListWidgetItem, QSystemTrayIcon, QStyle,
 )
 
 import config_store
@@ -196,7 +197,11 @@ class AnswerOverlay(QWidget):
         sb.setValue(0)
 
     def copy_text(self):
-        QApplication.clipboard().setText(self.body.toPlainText())
+        # 复制完整内容（答案 + 解析），而不是只有解析
+        text = (getattr(self, "_full", "") or "").strip()
+        if not text:
+            text = (self.answer.text() + "\n" + self.body.toPlainText()).strip()
+        QApplication.clipboard().setText(text)
         self.foot.setText("已复制到剪贴板")
 
     def mousePressEvent(self, e):
@@ -208,7 +213,12 @@ class AnswerOverlay(QWidget):
             self.move(e.globalPos() - self._drag)
 
     def mouseReleaseEvent(self, e):
-        self._drag = None
+        if self._drag is not None:
+            self._drag = None
+            try:
+                self.host.on_overlay_moved(self.pos())
+            except Exception:
+                pass
 
     def place_default(self):
         scr = QApplication.primaryScreen().availableGeometry()
@@ -221,6 +231,17 @@ class AnswerOverlay(QWidget):
         m = 10
         rx, ry = int(region.get("left", 0)), int(region.get("top", 0))
         rw, rh = int(region.get("width", 0)), int(region.get("height", 0))
+
+        # 用户拖动过：优先回到他放的位置（只要不压住监控区域）
+        saved = (self.host.cfg.get("overlay_pos") or []) if hasattr(self, "host") else []
+        if len(saved) == 2:
+            x, y = int(saved[0]), int(saved[1])
+            inside = (x >= scr.left() and y >= scr.top()
+                      and x + w <= scr.right() and y + h <= scr.bottom())
+            overlap = rw and rh and not (x + w < rx or x > rx + rw or y + h < ry or y > ry + rh)
+            if inside and not overlap:
+                self.move(x, y)
+                return
 
         cands = []
         if rw and rh:
@@ -274,7 +295,8 @@ class SettingsDialog(QDialog):
                            "border-radius:6px;padding:7px 14px;}"
                            "QPushButton:hover{background:#3a4150;}"
                            "QPlainTextEdit{background:#262a31;color:#e8eaed;border:1px solid #3a3f47;"
-                           "border-radius:6px;}")
+                           "border-radius:6px;}"
+                           "QCheckBox{color:#dfe3ea;}")
 
         lay = QVBoxLayout(self)
         tip = QLabel("① 选服务商 → ② 填 Key → ③ 点「测试连接」看到成功再保存")
@@ -320,6 +342,10 @@ class SettingsDialog(QDialog):
         self.interval.setValue(int(float(self.cfg.get("scan_interval", 1.2)) * 1000))
         self.interval.setSuffix(" ms")
         form.addRow("扫描间隔", self.interval)
+
+        self.autostart = QCheckBox("开机自动启动（静默进托盘）")
+        self.autostart.setChecked(config_store.autostart_enabled())
+        form.addRow("启动", self.autostart)
 
         lay.addLayout(form)
 
@@ -401,8 +427,142 @@ class SettingsDialog(QDialog):
         if not ok:
             QMessageBox.critical(self, "保存失败", info)
             return
+        want_as = self.autostart.isChecked()
+        if want_as != config_store.autostart_enabled():
+            ok2, info2 = config_store.set_autostart(want_as)
+            if not ok2:
+                QMessageBox.warning(self, "开机自启设置失败", info2)
         self.cfg = c
         self.accept()
+
+
+# ---------------------------------------------------------------- 历史记录窗
+class HistoryDialog(QDialog):
+    """浏览 history.jsonl：左边列表，右边题目 + 答案。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("历史记录 · Knowlib")
+        self.resize(820, 560)
+        self.setStyleSheet(
+            "QDialog{background:#15171c;}"
+            "QLabel{color:#dfe3ea;}"
+            "QListWidget{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
+            "border-radius:8px;padding:4px;}"
+            "QListWidget::item{padding:7px 8px;border-radius:6px;}"
+            "QListWidget::item:selected{background:#2b3546;}"
+            "QTextBrowser{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
+            "border-radius:8px;padding:10px;font-size:14px;}"
+            "QPushButton{background:#2b303a;color:#e6e9ef;border:none;border-radius:8px;"
+            "padding:7px 14px;}"
+            "QPushButton:hover{background:#39404d;}"
+            "QLineEdit{background:#262a31;color:#e8eaed;border:1px solid #3a3f47;"
+            "border-radius:6px;padding:6px;}"
+        )
+
+        self.items = []
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(10)
+
+        top = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜题目或答案里的关键词…")
+        self.search.textChanged.connect(self.apply_filter)
+        self.count = QLabel("")
+        self.count.setStyleSheet("color:#7f8896;font-size:12px;")
+        top.addWidget(self.search, 1)
+        top.addWidget(self.count)
+        lay.addLayout(top)
+
+        body = QHBoxLayout()
+        self.list = QListWidget()
+        self.list.setFixedWidth(250)
+        self.list.currentRowChanged.connect(self.show_item)
+        body.addWidget(self.list)
+
+        right = QVBoxLayout()
+        self.view = QTextBrowser()
+        right.addWidget(self.view, 1)
+        tools = QHBoxLayout()
+        self.btn_copy = QPushButton("复制这条")
+        self.btn_copy.clicked.connect(self.copy_current)
+        self.btn_del = QPushButton("清空全部")
+        self.btn_del.clicked.connect(self.clear_all)
+        self.btn_close = QPushButton("关闭")
+        self.btn_close.clicked.connect(self.accept)
+        tools.addWidget(self.btn_copy)
+        tools.addWidget(self.btn_del)
+        tools.addStretch(1)
+        tools.addWidget(self.btn_close)
+        right.addLayout(tools)
+        body.addLayout(right, 1)
+        lay.addLayout(body, 1)
+
+        self.reload()
+
+    # --
+    def reload(self):
+        self.items = config_store.load_history(limit=500)
+        self.apply_filter()
+
+    def apply_filter(self):
+        kw = self.search.text().strip().lower()
+        self.list.clear()
+        shown = 0
+        for it in self.items:
+            q = (it.get("q") or "")
+            a = (it.get("a") or "")
+            if kw and kw not in q.lower() and kw not in a.lower():
+                continue
+            q1 = " ".join(q.split())[:26] or "（无题目）"
+            item = QListWidgetItem(f"{it.get('t', '')[5:16]}  {q1}")
+            item.setData(Qt.UserRole, it)
+            self.list.addItem(item)
+            shown += 1
+        self.count.setText(f"共 {shown} 条" + ("（已搜索）" if kw else ""))
+        if shown:
+            self.list.setCurrentRow(0)
+        else:
+            self.view.setHtml("<div style='color:#7f8896;padding:20px'>"
+                              "还没有记录。跑一次识别后会自动存到这里。</div>")
+
+    def show_item(self, row):
+        if row < 0 or row >= self.list.count():
+            return
+        it = self.list.item(row).data(Qt.UserRole) or {}
+        q = (it.get("q") or "").strip()
+        a = (it.get("a") or "").strip()
+        cost = it.get("cost")
+        cost_s = f" · {cost}s" if isinstance(cost, (int, float)) else ""
+        html = (
+            f"<div style='color:#7f8896;font-size:12px'>{it.get('t','')}{cost_s}</div>"
+            f"<div style='color:#8fb6ff;font-size:12px;margin-top:10px'>题目</div>"
+            f"<div style='white-space:pre-wrap;margin-bottom:14px'>{self._esc(q)}</div>"
+            f"<div style='color:#8fb6ff;font-size:12px'>答案与解析</div>"
+            f"<div style='white-space:pre-wrap'>{self._esc(a)}</div>"
+        )
+        self.view.setHtml(html)
+
+    @staticmethod
+    def _esc(s):
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def copy_current(self):
+        row = self.list.currentRow()
+        if row < 0:
+            return
+        it = self.list.item(row).data(Qt.UserRole) or {}
+        QApplication.clipboard().setText(
+            f"题目：\n{it.get('q','')}\n\n{it.get('a','')}".strip())
+        self.count.setText("已复制✓")
+
+    def clear_all(self):
+        if QMessageBox.question(self, "清空历史", "确定删除所有历史记录？不可恢复。") != QMessageBox.Yes:
+            return
+        config_store.clear_history()
+        self.reload()
 
 
 # ---------------------------------------------------------------- 扫描线程
@@ -527,9 +687,12 @@ class MainWindow(QWidget):
         self.overlay = AnswerOverlay(self)
         self.overlay.hide()
         self.last_question = ""
+        self._quitting = False
+        self._tray_tip_shown = False
+        self.tray = None
 
         self.setWindowTitle(APP_TITLE)
-        self.setFixedSize(430, 330)
+        self.setFixedSize(430, 356)
         self.setStyleSheet(
             "QWidget{background:#15171c;color:#e6e9ef;font-family:'Microsoft YaHei';}"
             "QLabel{color:#e6e9ef;}"
@@ -579,8 +742,11 @@ class MainWindow(QWidget):
         self.btn_show.clicked.connect(self.toggle_overlay)
         self.btn_retry = QPushButton("重问一次")
         self.btn_retry.clicked.connect(self.ask_again)
+        self.btn_history = QPushButton("历史")
+        self.btn_history.clicked.connect(self.open_history)
         row2.addWidget(self.btn_show)
         row2.addWidget(self.btn_retry)
+        row2.addWidget(self.btn_history)
         lay.addLayout(row2)
 
         self.log = QPlainTextEdit()
@@ -588,7 +754,8 @@ class MainWindow(QWidget):
         self.log.setMaximumBlockCount(200)
         lay.addWidget(self.log, 1)
 
-        self.hint = QLabel("热键：F1 框选 · F2 暂停/继续 · F3 立即识别 · F4 重问 · F5 显示/隐藏答案窗")
+        self.hint = QLabel("热键：F1 框选 · F2 暂停/继续 · F3 立即识别 · F4 重问 · F5 显示/隐藏答案窗\n"
+                            f"v{config_store.APP_VERSION} · 关窗后仍在托盘后台运行")
         self.hint.setStyleSheet("color:#6b7280;font-size:11px;")
         self.hint.setWordWrap(True)
         lay.addWidget(self.hint)
@@ -598,6 +765,63 @@ class MainWindow(QWidget):
         lay.insertWidget(2, self.region_label)
 
         self.setup_hotkeys()
+        self.setup_tray()
+
+    # -------- 托盘
+    def _app_icon(self):
+        base = os.path.dirname(os.path.abspath(sys.argv[0] if getattr(sys, "frozen", False) else __file__))
+        for name in ("app.ico", "app.png"):
+            p = os.path.join(base, name)
+            if os.path.exists(p):
+                return QIcon(p)
+        return self.style().standardIcon(QStyle.SP_ComputerIcon)
+
+    def setup_tray(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = None
+            return
+        self.tray = QSystemTrayIcon(self._app_icon(), self)
+        self.tray.setToolTip("Knowlib · 截图搜题")
+        menu = QMenu()
+        self.act_show = QAction("显示主界面", self)
+        self.act_show.triggered.connect(self.show_main)
+        self.act_run = QAction("开始扫描", self)
+        self.act_run.triggered.connect(self.toggle_run)
+        self.act_overlay = QAction("显示/隐藏答案窗", self)
+        self.act_overlay.triggered.connect(self.toggle_overlay)
+        self.act_hist = QAction("历史记录", self)
+        self.act_hist.triggered.connect(self.open_history)
+        self.act_quit = QAction("退出", self)
+        self.act_quit.triggered.connect(self.quit_app)
+        for a in (self.act_show, self.act_run, self.act_overlay, self.act_hist):
+            menu.addAction(a)
+        menu.addSeparator()
+        menu.addAction(self.act_quit)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._tray_clicked)
+        self.tray.show()
+
+    def _tray_clicked(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.show_main()
+
+    def show_main(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def quit_app(self):
+        self._quitting = True
+        self.stop_run()
+        self.overlay.close()
+        if self.tray:
+            self.tray.hide()
+        QApplication.quit()
+
+    # -------- 历史
+    def open_history(self):
+        dlg = HistoryDialog(self)
+        dlg.exec_()
 
     # -------- 状态
     def set_state(self, text, color):
@@ -701,6 +925,8 @@ class MainWindow(QWidget):
 
         self.thread.start()
         self.btn_start.setText("停止")
+        if self.tray:
+            self.act_run.setText("停止扫描")
         self.add_log("已开始扫描")
         self.set_state("启动中…", COLOR_WARN)
 
@@ -713,6 +939,8 @@ class MainWindow(QWidget):
         self.thread = None
         self.worker = None
         self.btn_start.setText("开始")
+        if self.tray:
+            self.act_run.setText("开始扫描")
         self.set_state("已停止", COLOR_IDLE)
         self.add_log("已停止扫描")
 
@@ -776,6 +1004,10 @@ class MainWindow(QWidget):
         except Exception:
             pass
 
+    def on_overlay_moved(self, pos):
+        self.cfg["overlay_pos"] = [int(pos.x()), int(pos.y())]
+        config_store.save(self.cfg)
+
     def toggle_overlay(self):
         if self.overlay.isVisible():
             self.overlay.hide()
@@ -816,18 +1048,71 @@ class MainWindow(QWidget):
         self._re.start()
 
     def closeEvent(self, e):
+        # 有托盘：关闭 = 收到托盘，后台继续监控
+        if self.tray is not None and not self._quitting:
+            e.ignore()
+            self.hide()
+            if not self._tray_tip_shown:
+                self._tray_tip_shown = True
+                self.tray.showMessage(
+                    "Knowlib 还在后台",
+                    "点托盘图标可以再打开；要彻底退出请右键托盘 → 退出。",
+                    QSystemTrayIcon.Information, 3000)
+            return
         self.stop_run()
         self.overlay.close()
         e.accept()
+        if self.tray is None:
+            QApplication.quit()
+
+
+SINGLE_NAME = "knowlib-pc-single-instance"
 
 
 def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(True)
+    app.setQuitOnLastWindowClosed(False)   # 关窗收托盘，真要退出走 quit_app
+
+    # 单实例：已经在跑就把旧窗口叫出来，不再开第二个
+    server = None
+    try:
+        from PyQt5.QtNetwork import QLocalSocket, QLocalServer
+        probe = QLocalSocket()
+        probe.connectToServer(SINGLE_NAME)
+        if probe.waitForConnected(300):
+            probe.write(b"show")
+            probe.flush()
+            probe.waitForBytesWritten(300)
+            probe.disconnectFromServer()
+            return
+        QLocalServer.removeServer(SINGLE_NAME)
+        server = QLocalServer()
+        server.listen(SINGLE_NAME)
+    except Exception:
+        server = None
+
     w = MainWindow()
-    w.show()
+
+    if server is not None:
+        def _on_conn():
+            c = server.nextPendingConnection()
+            if c:
+                c.readyRead.connect(lambda: (w.show_main(), c.disconnectFromServer()))
+                c.disconnected.connect(c.deleteLater)
+        server.newConnection.connect(_on_conn)
+        w._local_server = server   # 保持引用，别被回收
+
+    # 开机自启用 --tray：静默进托盘，不弹窗（除非还没配 Key）
     cfg = config_store.load()
+    if "--tray" in sys.argv and cfg.get("api_key"):
+        if w.tray:
+            w.hide()
+        else:
+            w.show()
+    else:
+        w.show()
+
     if not cfg.get("api_key"):
         QTimer.singleShot(300, w.open_settings)
     sys.exit(app.exec_())
