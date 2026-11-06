@@ -30,6 +30,48 @@ COLOR_IDLE = "#8a8f98"
 COLOR_ACCENT = "#5b9dff"
 
 
+# ---------------------------------------------------------------- 统一深色消息框
+# 注意：主窗口的样式表会串到 QMessageBox 上（浅色字 + 默认白底 = 看不清），
+# 所以所有消息框都显式套一层样式。
+_BOX_QSS = (
+    "QMessageBox{background:#1b1d22;}"
+    "QMessageBox QLabel{color:#e6e9ef;font-size:13px;background:transparent;}"
+    "QMessageBox QPushButton{background:#2b303a;color:#e6e9ef;border:none;"
+    "border-radius:7px;padding:7px 18px;min-width:78px;font-size:13px;}"
+    "QMessageBox QPushButton:hover{background:#39404d;}"
+    "QMessageBox QPushButton:default{background:#3b6ef0;color:#ffffff;}"
+)
+
+
+def _box(parent, icon, title, text):
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(icon)
+    box.setStyleSheet(_BOX_QSS)
+    return box
+
+
+def ask_yes(parent, title, text):
+    box = _box(parent, QMessageBox.Question, title, text)
+    box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+    box.setDefaultButton(QMessageBox.Yes)
+    return box.exec_() == QMessageBox.Yes
+
+
+def warn_box(parent, title, text):
+    box = _box(parent, QMessageBox.Warning, title, text)
+    box.setStandardButtons(QMessageBox.Ok)
+    box.exec_()
+
+
+def error_box(parent, title, text):
+    box = _box(parent, QMessageBox.Critical, title, text)
+    box.setStandardButtons(QMessageBox.Ok)
+    box.exec_()
+
+
+
 # ---------------------------------------------------------------- 区域选择
 class RegionSelector(QWidget):
     selected = pyqtSignal(dict)
@@ -454,21 +496,20 @@ class SettingsDialog(QDialog):
     def do_save(self):
         c = self._collect()
         if not c["base_url"] or not c["model"]:
-            QMessageBox.warning(self, "还没填完", "API 端点和模型不能为空")
+            warn_box(self, "还没填完", "API 端点和模型不能为空")
             return
         if not c["api_key"]:
-            r = QMessageBox.question(self, "没填 Key", "没填 API Key，多数服务会调用失败。仍然保存？")
-            if r != QMessageBox.Yes:
+            if not ask_yes(self, "没填 Key", "没填 API Key，多数服务会调用失败。仍然保存？"):
                 return
         ok, info = config_store.save(c)
         if not ok:
-            QMessageBox.critical(self, "保存失败", info)
+            error_box(self, "保存失败", info)
             return
         want_as = self.autostart.isChecked()
         if want_as != config_store.autostart_enabled():
             ok2, info2 = config_store.set_autostart(want_as)
             if not ok2:
-                QMessageBox.warning(self, "开机自启设置失败", info2)
+                warn_box(self, "开机自启设置失败", info2)
         self.cfg = c
         self.accept()
 
@@ -596,7 +637,7 @@ class HistoryDialog(QDialog):
         self.count.setText("已复制✓")
 
     def clear_all(self):
-        if QMessageBox.question(self, "清空历史", "确定删除所有历史记录？不可恢复。") != QMessageBox.Yes:
+        if not ask_yes(self, "清空历史", "确定删除所有历史记录？不可恢复。"):
             return
         config_store.clear_history()
         self.reload()
@@ -751,7 +792,7 @@ class BankDialog(QDialog):
         self.reload()
 
     def clear_all(self):
-        if QMessageBox.question(self, "清空题库", "确定删除全部题目？不可恢复。") != QMessageBox.Yes:
+        if not ask_yes(self, "清空题库", "确定删除全部题目？不可恢复。"):
             return
         qbank.clear()
         self.reload()
@@ -1233,7 +1274,7 @@ class MainWindow(QWidget):
         size_mb = (info.get("size") or 0) / 1048576
         tip = (f"下载 v{info['latest']}（{size_mb:.0f}MB）并安装？\n"
                "安装时本程序会自动关闭，装完重新打开即可。")
-        if QMessageBox.question(self, "更新 Knowlib", tip) != QMessageBox.Yes:
+        if not ask_yes(self, "更新 Knowlib", tip):
             return
         self.titlebar.btn_update.setEnabled(False)
         url = info["url"]
