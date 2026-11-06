@@ -36,8 +36,12 @@ def init_db():
                 "source TEXT DEFAULT 'ai',"
                 "hits INTEGER DEFAULT 0,"
                 "created TEXT,"
-                "used TEXT)"
+                "used TEXT,"
+                "qtype TEXT DEFAULT '')"
             )
+            cols = [r[1] for r in c.execute("PRAGMA table_info(questions)").fetchall()]
+            if "qtype" not in cols:
+                c.execute("ALTER TABLE questions ADD COLUMN qtype TEXT DEFAULT ''")
         return True
     except Exception:
         return False
@@ -87,26 +91,50 @@ def save(q_text, full_answer, source="ai"):
     if not (ans or sol):
         return False
     now = time.strftime("%Y-%m-%d %H:%M:%S")
+    qtype = detect_type(text, ans)
     try:
         with _conn() as c:
             c.execute(
-                "INSERT INTO questions(norm,q_text,answer,solution,source,hits,created,used)"
-                " VALUES(?,?,?,?,?,0,?,?)"
+                "INSERT INTO questions(norm,q_text,answer,solution,source,hits,created,used,qtype)"
+                " VALUES(?,?,?,?,?,0,?,?,?)"
                 " ON CONFLICT(norm) DO UPDATE SET"
                 " q_text=excluded.q_text, answer=excluded.answer,"
                 " solution=excluded.solution, source=excluded.source,"
-                " used=excluded.used",
-                (norm, text, ans, sol, source, now, now))
+                " used=excluded.used,"
+                " qtype=CASE WHEN questions.qtype IS NULL OR questions.qtype=''"
+                "  THEN excluded.qtype ELSE questions.qtype END",
+                (norm, text, ans, sol, source, now, now, qtype))
+        return True
+    except Exception:
+        return False
+
+
+def detect_type(q_text, answer=""):
+    """题型粗判（paper_export.detect_type 的轻量版，避免循环导入）。"""
+    try:
+        import paper_export
+        return paper_export.detect_type(q_text, answer)
+    except Exception:
+        return ""
+
+
+def set_type(qid, qtype):
+    try:
+        with _conn() as c:
+            c.execute("UPDATE questions SET qtype=? WHERE id=?", (qtype, qid))
         return True
     except Exception:
         return False
 
 
 def _row_to_dict(row, score=1.0):
+    keys = row.keys()
     return {"id": row["id"], "q_text": row["q_text"], "answer": row["answer"] or "",
             "solution": row["solution"] or "", "hits": row["hits"] or 0,
             "created": row["created"] or "", "used": row["used"] or "",
-            "source": row["source"] or "ai", "score": score}
+            "source": row["source"] or "ai",
+            "qtype": (row["qtype"] if "qtype" in keys else "") or "",
+            "score": score}
 
 
 def lookup(q_text, threshold=FUZZY_THRESHOLD):

@@ -9,13 +9,16 @@ import traceback
 # ⚠️ 先导入 OCR（onnxruntime），再导入 PyQt5，否则会 0xC0000005 崩溃
 import ocr_ai  # noqa: F401  (顺序敏感)
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer, QPoint, QRect
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QBrush, QIcon, QPixmap, QTextCursor
+from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QObject, QTimer, QPoint, QRect,
+                          QEvent, QPropertyAnimation, QEasingCurve, QVariantAnimation)
+from PyQt5.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QIcon, QPixmap,
+                         QTextCursor, QGuiApplication)
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QDialog, QLineEdit, QComboBox, QFormLayout, QMessageBox,
     QTextBrowser, QCheckBox, QSpinBox, QSizePolicy, QFrame, QMenu, QAction,
     QListWidget, QListWidgetItem, QSystemTrayIcon, QStyle, QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect, QStackedWidget,
 )
 
 import config_store
@@ -346,13 +349,15 @@ class AnswerOverlay(QWidget):
 
 
 # ---------------------------------------------------------------- 设置对话框
-class SettingsDialog(QDialog):
-    def __init__(self, cfg, parent=None):
+class SettingsPage(QWidget):
+    def __init__(self, cfg, parent=None, on_saved=None, on_back=None):
         super().__init__(parent)
         self.cfg = dict(cfg)
-        self.setWindowTitle("设置 · Knowlib")
-        self.setMinimumWidth(560)
-        self.setStyleSheet("QDialog{background:#1b1d22;} QLabel{color:#dfe3ea;}"
+        self._on_saved = on_saved
+        self._on_back = on_back
+        self.setObjectName("settingsPage")
+        self.setStyleSheet("QWidget#settingsPage{background:transparent;}"
+                           "QLabel{color:#dfe3ea;}"
                            "QLineEdit,QComboBox,QSpinBox{background:#262a31;color:#e8eaed;"
                            "border:1px solid #3a3f47;border-radius:6px;padding:6px;}"
                            "QPushButton{background:#2f3540;color:#e8eaed;border:none;"
@@ -419,6 +424,18 @@ class SettingsDialog(QDialog):
         self.check_update.setChecked(bool(self.cfg.get("check_update", True)))
         form.addRow("更新", self.check_update)
 
+        self.close_action = QComboBox()
+        self.close_action.addItem("最小化到托盘（后台继续待命）", "tray")
+        self.close_action.addItem("直接退出程序", "exit")
+        self.close_action.addItem("每次问我", "ask")
+        _ci = self.close_action.findData(self.cfg.get("close_action", "tray"))
+        self.close_action.setCurrentIndex(_ci if _ci >= 0 else 0)
+        form.addRow("关闭按钮", self.close_action)
+
+        self.animations = QCheckBox("界面动画（窗口展开 / 收起）")
+        self.animations.setChecked(bool(self.cfg.get("animations", True)))
+        form.addRow("外观", self.animations)
+
         lay.addLayout(form)
 
         self.test_result = QLabel("尚未测试")
@@ -433,7 +450,7 @@ class SettingsDialog(QDialog):
         self.btn_save = QPushButton("保存")
         self.btn_save.clicked.connect(self.do_save)
         self.btn_cancel = QPushButton("取消")
-        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_cancel.clicked.connect(self._go_back)
         row.addWidget(self.btn_test)
         row.addWidget(self.btn_upd)
         row.addStretch(1)
@@ -470,6 +487,8 @@ class SettingsDialog(QDialog):
         c["prompt"] = self.prompt.toPlainText().strip()
         c["bank_first"] = self.bank_first.isChecked()
         c["check_update"] = self.check_update.isChecked()
+        c["close_action"] = self.close_action.currentData() or "tray"
+        c["animations"] = self.animations.isChecked()
         return c
 
     def do_test(self):
@@ -527,19 +546,25 @@ class SettingsDialog(QDialog):
             if not ok2:
                 warn_box(self, "开机自启设置失败", info2)
         self.cfg = c
-        self.accept()
+        if self._on_saved:
+            self._on_saved(c)
+        self._go_back()
+
+    def _go_back(self):
+        if self._on_back:
+            self._on_back()
 
 
 # ---------------------------------------------------------------- 历史记录窗
-class HistoryDialog(QDialog):
-    """浏览 history.jsonl：左边列表，右边题目 + 答案。"""
+class HistoryPage(QWidget):
+    """浏览 history.jsonl：左边列表，右边题目 + 答案（内嵌在主窗口里）。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, on_back=None):
         super().__init__(parent)
-        self.setWindowTitle("历史记录 · Knowlib")
-        self.resize(820, 560)
+        self._on_back = on_back
+        self.setObjectName("historyPage")
         self.setStyleSheet(
-            "QDialog{background:#15171c;}"
+            "QWidget#historyPage{background:transparent;}"
             "QLabel{color:#dfe3ea;}"
             "QListWidget{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
             "border-radius:8px;padding:4px;}"
@@ -566,7 +591,12 @@ class HistoryDialog(QDialog):
         self.search.textChanged.connect(self.apply_filter)
         self.count = QLabel("")
         self.count.setStyleSheet("color:#7f8896;font-size:12px;")
+        self.chk_clean = QCheckBox("只看有效（自动去重）")
+        self.chk_clean.setChecked(True)
+        self.chk_clean.setStyleSheet("QCheckBox{color:#98a2b3;font-size:12px;}")
+        self.chk_clean.toggled.connect(self.apply_filter)
         top.addWidget(self.search, 1)
+        top.addWidget(self.chk_clean)
         top.addWidget(self.count)
         lay.addLayout(top)
 
@@ -582,11 +612,20 @@ class HistoryDialog(QDialog):
         tools = QHBoxLayout()
         self.btn_copy = QPushButton("复制这条")
         self.btn_copy.clicked.connect(self.copy_current)
+        self.btn_add = QPushButton("加入题库")
+        self.btn_add.clicked.connect(self.add_to_bank)
+        self.btn_add_all = QPushButton("有效项全部入库")
+        self.btn_add_all.clicked.connect(self.add_all_to_bank)
+        self.btn_clean = QPushButton("清理无效")
+        self.btn_clean.clicked.connect(self.clean_invalid)
         self.btn_del = QPushButton("清空全部")
         self.btn_del.clicked.connect(self.clear_all)
-        self.btn_close = QPushButton("关闭")
-        self.btn_close.clicked.connect(self.accept)
+        self.btn_close = QPushButton("← 返回")
+        self.btn_close.clicked.connect(self._go_back)
         tools.addWidget(self.btn_copy)
+        tools.addWidget(self.btn_add)
+        tools.addWidget(self.btn_add_all)
+        tools.addWidget(self.btn_clean)
         tools.addWidget(self.btn_del)
         tools.addStretch(1)
         tools.addWidget(self.btn_close)
@@ -601,26 +640,42 @@ class HistoryDialog(QDialog):
         self.items = config_store.load_history(limit=500)
         self.apply_filter()
 
-    def apply_filter(self):
+    def _visible_items(self):
+        """按「只看有效」过滤 + 同题（含模糊重复）去重，保留最新。"""
         kw = self.search.text().strip().lower()
-        self.list.clear()
-        shown = 0
+        pool = []
         for it in self.items:
             q = (it.get("q") or "")
             a = (it.get("a") or "")
             if kw and kw not in q.lower() and kw not in a.lower():
                 continue
+            pool.append(it)
+        if not self.chk_clean.isChecked():
+            return pool, 0
+        kept, dropped = config_store.dedupe_history(pool, keep_valid=True)
+        return kept, dropped
+
+    def apply_filter(self):
+        vis, dropped = self._visible_items()
+        cur = self.list.currentRow()
+        self.list.clear()
+        for it in vis:
+            q = (it.get("q") or "")
             q1 = " ".join(q.split())[:26] or "（无题目）"
             item = QListWidgetItem(f"{it.get('t', '')[5:16]}  {q1}")
             item.setData(Qt.UserRole, it)
             self.list.addItem(item)
-            shown += 1
-        self.count.setText(f"共 {shown} 条" + ("（已搜索）" if kw else ""))
-        if shown:
-            self.list.setCurrentRow(0)
+        txt = f"共 {len(vis)} 条"
+        if dropped:
+            txt += f" · 已隐藏 {dropped} 条无效/重复"
+        if self.search.text().strip():
+            txt += "（已搜索）"
+        self.count.setText(txt)
+        if vis:
+            self.list.setCurrentRow(min(max(cur, 0), len(vis) - 1))
         else:
             self.view.setHtml("<div style='color:#7f8896;padding:20px'>"
-                              "还没有记录。跑一次识别后会自动存到这里。</div>")
+                              "没有可显示的记录。取消勾选「只看有效」可以看全部。</div>")
 
     def show_item(self, row):
         if row < 0 or row >= self.list.count():
@@ -658,17 +713,59 @@ class HistoryDialog(QDialog):
         config_store.clear_history()
         self.reload()
 
+    def _go_back(self):
+        if self._on_back:
+            self._on_back()
+
+    def add_to_bank(self):
+        row = self.list.currentRow()
+        if row < 0:
+            self.count.setText("先选一条")
+            return
+        it = self.list.item(row).data(Qt.UserRole) or {}
+        q = (it.get("q") or "").strip()
+        a = (it.get("a") or "").strip()
+        if not q or not a:
+            self.count.setText("这条没有答案，存不了")
+            return
+        ok = qbank.save(q, a, source="history")
+        self.count.setText("已加入题库 ✓" if ok else "加入失败（题目太短？）")
+
+    def add_all_to_bank(self):
+        vis, _ = self._visible_items()
+        if not vis:
+            self.count.setText("没有可入库的记录")
+            return
+        if not ask_yes(self, "批量入库", f"把当前列表里的 {len(vis)} 条全部加入题库？"):
+            return
+        ok = 0
+        for it in vis:
+            q = (it.get("q") or "").strip()
+            a = (it.get("a") or "").strip()
+            if q and a and qbank.save(q, a, source="history"):
+                ok += 1
+        self.count.setText(f"已入库 {ok} 条 ✓")
+
+    def clean_invalid(self):
+        if not ask_yes(self, "清理历史",
+                       "删除重复记录和无效记录（无法作答 / 界面文字）？\n"
+                       "会自动备份一份 history.jsonl.bak。"):
+            return
+        r = config_store.clean_history(keep_valid=True, dedupe=True)
+        self.reload()
+        self.count.setText(f"清理完成：{r['before']} → {r['after']} 条")
+
 
 # ---------------------------------------------------------------- 本地题库窗
-class BankDialog(QDialog):
-    """本地题库：检索 / 复制 / 删除 / 导入导出。"""
+class BankPage(QWidget):
+    """本地题库：检索 / 复制 / 删除 / 导入导出（内嵌在主窗口里）。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, on_back=None):
         super().__init__(parent)
-        self.setWindowTitle("本地题库 · Knowlib")
-        self.resize(860, 580)
+        self._on_back = on_back
+        self.setObjectName("bankPage")
         self.setStyleSheet(
-            "QDialog{background:#15171c;}"
+            "QWidget#bankPage{background:transparent;}"
             "QLabel{color:#dfe3ea;}"
             "QListWidget{background:#101216;color:#dfe3ea;border:1px solid #262a31;"
             "border-radius:8px;padding:4px;}"
@@ -713,10 +810,32 @@ class BankDialog(QDialog):
         self.btn_copy.clicked.connect(self.copy_current)
         self.btn_del = QPushButton("删除这条")
         self.btn_del.clicked.connect(self.delete_current)
+        self.btn_all = QPushButton("全选")
+        self.btn_all.clicked.connect(lambda: self.check_all(True))
+        self.btn_none = QPushButton("全不选")
+        self.btn_none.clicked.connect(lambda: self.check_all(False))
         tools1.addWidget(self.btn_copy)
         tools1.addWidget(self.btn_del)
+        tools1.addWidget(self.btn_all)
+        tools1.addWidget(self.btn_none)
         tools1.addStretch(1)
         right.addLayout(tools1)
+
+        tools1b = QHBoxLayout()
+        self.chk_answer = QCheckBox("导出含答案与解析")
+        self.chk_answer.setStyleSheet("QCheckBox{color:#98a2b3;}")
+        self.btn_md = QPushButton("导出 MD")
+        self.btn_md.clicked.connect(self.export_md)
+        self.btn_pdf = QPushButton("导出 PDF")
+        self.btn_pdf.clicked.connect(self.export_pdf)
+        self.btn_pdf.setStyleSheet(
+            "QPushButton{background:#2f6feb;color:#ffffff;border:none;border-radius:8px;"
+            "padding:7px 14px;}QPushButton:hover{background:#3f7ffb;}")
+        tools1b.addWidget(self.chk_answer)
+        tools1b.addStretch(1)
+        tools1b.addWidget(self.btn_md)
+        tools1b.addWidget(self.btn_pdf)
+        right.addLayout(tools1b)
 
         tools2 = QHBoxLayout()
         self.btn_import = QPushButton("导入 CSV")
@@ -725,8 +844,8 @@ class BankDialog(QDialog):
         self.btn_export.clicked.connect(self.export_csv)
         self.btn_clear = QPushButton("清空题库")
         self.btn_clear.clicked.connect(self.clear_all)
-        self.btn_close = QPushButton("关闭")
-        self.btn_close.clicked.connect(self.accept)
+        self.btn_close = QPushButton("← 返回")
+        self.btn_close.clicked.connect(self._go_back)
         tools2.addWidget(self.btn_import)
         tools2.addWidget(self.btn_export)
         tools2.addWidget(self.btn_clear)
@@ -741,12 +860,17 @@ class BankDialog(QDialog):
     def reload(self):
         kw = self.search.text().strip()
         self.items = qbank.items(kw, limit=500)
+        checked = {it.get("id") for it in self._checked_items()}
         self.list.clear()
         for it in self.items:
             q1 = " ".join((it["q_text"] or "").split())[:24] or "（无题目）"
             mark = "" if it["source"] == "ai" else f"·{it['source']}"
-            item = QListWidgetItem(f"[{it['hits']}] {q1}{mark}")
+            t = it.get("qtype") or ""
+            head = f"[{(t[:2] + '·') if t else ''}{it['hits']}] "
+            item = QListWidgetItem(f"{head}{q1}{mark}")
             item.setData(Qt.UserRole, it)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if it.get("id") in checked else Qt.Unchecked)
             self.list.addItem(item)
         st = qbank.stats()
         self.stat.setText(f"共 {st['count']} 题 · 命中 {st['hits']} 次")
@@ -756,11 +880,23 @@ class BankDialog(QDialog):
             self.view.setHtml("<div style='color:#7f8896;padding:20px'>"
                               "题库还是空的。识别并答对一次后会自动存进来。</div>")
 
+    def _checked_items(self):
+        out = []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.checkState() == Qt.Checked:
+                out.append(it.data(Qt.UserRole) or {})
+        return out
+
+    def check_all(self, on):
+        for i in range(self.list.count()):
+            self.list.item(i).setCheckState(Qt.Checked if on else Qt.Unchecked)
+
     def show_item(self, row):
         if row < 0 or row >= self.list.count():
             return
         it = self.list.item(row).data(Qt.UserRole) or {}
-        esc = HistoryDialog._esc
+        esc = HistoryPage._esc
         html = (
             f"<div style='color:#7f8896;font-size:12px'>存于 {it.get('created','')}"
             f" · 命中 {it.get('hits',0)} 次</div>"
@@ -807,11 +943,56 @@ class BankDialog(QDialog):
         self.stat.setText(f"已导入 {n} 题 ✓" if ok else f"导入失败：{n}")
         self.reload()
 
+    # -------- 导出（MD / PDF）
+    @staticmethod
+    def _default_name(ext):
+        return f"Knowlib题库-{time.strftime('%Y%m%d-%H%M')}.{ext}"
+
+    def export_md(self):
+        from PyQt5.QtWidgets import QFileDialog
+        import paper_export
+        items = self._checked_items()
+        if not items:
+            self.stat.setText("先勾选要导出的题目")
+            return
+        p, _ = QFileDialog.getSaveFileName(self, "导出 Markdown", self._default_name("md"),
+                                           "Markdown (*.md)")
+        if not p:
+            return
+        md = paper_export.build_md(items, with_answer=self.chk_answer.isChecked())
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(md)
+            self.stat.setText(f"已导出 {len(items)} 题 → {os.path.basename(p)} ✓")
+        except Exception as e:
+            self.stat.setText(f"导出失败：{e}")
+
+    def export_pdf(self):
+        from PyQt5.QtWidgets import QFileDialog
+        import paper_export
+        items = self._checked_items()
+        if not items:
+            self.stat.setText("先勾选要导出的题目")
+            return
+        p, _ = QFileDialog.getSaveFileName(self, "导出 PDF", self._default_name("pdf"),
+                                           "PDF (*.pdf)")
+        if not p:
+            return
+        try:
+            paper_export.export_pdf(items, p, with_answer=self.chk_answer.isChecked())
+            self.stat.setText(f"已导出 {len(items)} 题 → {os.path.basename(p)} ✓")
+        except Exception as e:
+            self.stat.setText(f"导出失败：{type(e).__name__}: {e}")
+
     def clear_all(self):
         if not ask_yes(self, "清空题库", "确定删除全部题目？不可恢复。"):
             return
         qbank.clear()
         self.reload()
+
+    def _go_back(self):
+        if self._on_back:
+            self._on_back()
 
 
 # ---------------------------------------------------------------- 扫描线程
@@ -992,15 +1173,17 @@ class TitleBar(QWidget):
 
         self.btn_min = QPushButton("—")
         self.btn_min.setObjectName("winbtn")
-        self.btn_min.setFixedSize(30, 26)
+        self.btn_min.setFixedSize(34, 30)
         self.btn_min.setCursor(Qt.PointingHandCursor)
-        self.btn_min.clicked.connect(win.showMinimized)
+        self.btn_min.setToolTip("最小化")
+        self.btn_min.clicked.connect(win.animate_minimize)
         lay.addWidget(self.btn_min)
 
-        self.btn_close = QPushButton("×")
+        self.btn_close = QPushButton("✕")
         self.btn_close.setObjectName("closebtn")
-        self.btn_close.setFixedSize(30, 26)
+        self.btn_close.setFixedSize(34, 30)
         self.btn_close.setCursor(Qt.PointingHandCursor)
+        self.btn_close.setToolTip("关闭")
         self.btn_close.clicked.connect(win.close)
         lay.addWidget(self.btn_close)
 
@@ -1014,6 +1197,23 @@ class TitleBar(QWidget):
 
     def mouseReleaseEvent(self, e):
         self._drag = None
+
+
+class _SnapWindow(QWidget):
+    """最小化动画用的快照窗：显示主窗口的截屏，然后飞到任务栏。"""
+
+    def __init__(self, pix, geo):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+                         | Qt.Tool | Qt.WindowTransparentForInput)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self._pix = pix
+        self.setGeometry(geo)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.drawPixmap(self.rect(), self._pix)
 
 
 class MainWindow(QWidget):
@@ -1031,6 +1231,11 @@ class MainWindow(QWidget):
         self._quitting = False
         self._tray_tip_shown = False
         self.tray = None
+        self._was_minimized = False
+        self._mini_anim = None
+        self._snap = None
+        self._page_anim = None
+        self._fade_effects = {}
 
         self.setWindowTitle(APP_TITLE)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
@@ -1064,11 +1269,11 @@ class MainWindow(QWidget):
             "border-radius:9px;padding:4px 9px;font-weight:600;}"
             "QPushButton#updatebtn:hover{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             "stop:0 #3ddc84,stop:1 #27b566);}"
-            "QPushButton#winbtn{background:transparent;color:#9aa4b2;font-size:14px;"
-            "border-radius:7px;padding:0;}"
+            "QPushButton#winbtn{background:transparent;color:#9aa4b2;font-size:13px;"
+            "border-radius:8px;padding:0;}"
             "QPushButton#winbtn:hover{background:rgba(255,255,255,22);color:#ffffff;}"
-            "QPushButton#closebtn{background:transparent;color:#9aa4b2;font-size:16px;"
-            "border-radius:7px;padding:0;}"
+            "QPushButton#closebtn{background:transparent;color:#9aa4b2;font-size:13px;"
+            "border-radius:8px;padding:0;}"
             "QPushButton#closebtn:hover{background:#e0435c;color:#ffffff;}"
             "QPlainTextEdit{background:rgba(0,0,0,80);color:#98a2b3;"
             "border:1px solid rgba(255,255,255,10);border-radius:11px;"
@@ -1094,6 +1299,15 @@ class MainWindow(QWidget):
         self.titlebar = TitleBar(self)
         self.btn_settings = self.titlebar.btn_settings
         lay.addWidget(self.titlebar)
+
+        # ---- 页面容器：答题 / 历史 / 题库 / 设置 都在同一个窗口里切换
+        self.stack = QStackedWidget()
+        lay.addWidget(self.stack, 1)
+        self.page_home = QWidget()
+        self.page_home.setObjectName("homePage")
+        lay_home = QVBoxLayout(self.page_home)
+        lay_home.setContentsMargins(0, 0, 0, 0)
+        lay_home.setSpacing(11)
 
         # ---- 状态卡片
         card = QFrame()
@@ -1121,7 +1335,7 @@ class MainWindow(QWidget):
         self.detail.setStyleSheet("color:#8a93a3;font-size:12px;")
         self.detail.setWordWrap(True)
         cl.addWidget(self.detail)
-        lay.addWidget(card)
+        lay_home.addWidget(card)
 
         # ---- 操作按钮
         row1 = QHBoxLayout()
@@ -1137,7 +1351,7 @@ class MainWindow(QWidget):
         row1.addWidget(self.btn_region, 1)
         row1.addWidget(self.btn_start, 1)
         row1.addWidget(self.btn_shot, 1)
-        lay.addLayout(row1)
+        lay_home.addLayout(row1)
 
         row2 = QHBoxLayout()
         row2.setSpacing(9)
@@ -1153,22 +1367,208 @@ class MainWindow(QWidget):
         row2.addWidget(self.btn_retry, 1)
         row2.addWidget(self.btn_history, 1)
         row2.addWidget(self.btn_bank, 1)
-        lay.addLayout(row2)
+        lay_home.addLayout(row2)
 
         # ---- 日志
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(200)
-        lay.addWidget(self.log, 1)
+        lay_home.addWidget(self.log, 1)
 
         self.hint = QLabel("F1 框选 · F2 暂停 · F3 立即识别 · F4 重问 · F5 答案窗"
                            "　|　关窗后在托盘后台运行")
         self.hint.setStyleSheet("color:#5f6875;font-size:10.5px;")
         self.hint.setWordWrap(True)
-        lay.addWidget(self.hint)
+        lay_home.addWidget(self.hint)
+
+        # ---- 其他页面（同一个窗口内切换）
+        self.stack.addWidget(self.page_home)
+        self.page_history = HistoryPage(self, on_back=lambda: self.show_page("home"))
+        self.page_bank = BankPage(self, on_back=lambda: self.show_page("home"))
+        self.page_settings = SettingsPage(self.cfg, self,
+                                          on_saved=self._on_settings_saved,
+                                          on_back=lambda: self.show_page("home"))
+        for p in (self.page_history, self.page_bank, self.page_settings):
+            self.stack.addWidget(p)
+        self.stack.setCurrentWidget(self.page_home)
 
         self.setup_hotkeys()
         self.setup_tray()
+
+    # -------- 页面切换
+    PAGE_SIZES = {"home": (470, 492), "history": (900, 600),
+                  "bank": (900, 620), "settings": (580, 762)}
+
+    def _anim_on(self):
+        return bool(self.cfg.get("animations", True))
+
+    def show_page(self, name, animate=True):
+        page = {"home": self.page_home, "history": self.page_history,
+                "bank": self.page_bank, "settings": self.page_settings}.get(name)
+        if page is None:
+            return
+        w, h = self.PAGE_SIZES.get(name, (470, 492))
+        same = (page is self.stack.currentWidget() and
+                (self.width(), self.height()) == (w, h))
+        self.stack.setCurrentWidget(page)
+        if same:
+            return
+        self._resize_to(w, h, page, animate and self._anim_on())
+        if name == "history":
+            self.page_history.reload()
+        elif name == "bank":
+            self.page_bank.reload()
+
+    def _resize_to(self, w, h, page=None, animate=True):
+        """窗口尺寸/位置过渡；非动画时直接 setFixedSize。"""
+        start = self.geometry()
+        end = self._clamped_rect(QRect(start.x(), start.y(), w, h))
+        if not animate:
+            self.setFixedSize(w, h)
+            self.move(end.topLeft())
+            return
+        if self._page_anim is not None:
+            self._page_anim.stop()
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        a = QPropertyAnimation(self, b"geometry", self)
+        a.setDuration(230)
+        a.setStartValue(start)
+        a.setEndValue(end)
+        a.setEasingCurve(QEasingCurve.OutCubic)
+
+        def done():
+            self.setFixedSize(w, h)
+            self._keep_on_screen()
+            if page is not None:
+                self._fade_in(page)
+
+        a.finished.connect(done)
+        self._page_anim = a
+        a.start()
+
+    def _clamped_rect(self, r):
+        """把矩形拉回屏幕可用区域内。"""
+        scr = QApplication.primaryScreen()
+        if not scr:
+            return r
+        g = scr.availableGeometry()
+        x = min(max(r.x(), g.left() + 8), max(g.left() + 8, g.right() - r.width() - 8))
+        y = min(max(r.y(), g.top() + 8), max(g.top() + 8, g.bottom() - r.height() - 8))
+        return QRect(x, y, r.width(), r.height())
+
+    def _fade_in(self, page):
+        """页面内容淡入（效果对象常驻，避免动画中途被销毁）。"""
+        eff = self._fade_effects.get(page)
+        if eff is None:
+            eff = QGraphicsOpacityEffect(page)
+            eff.setOpacity(1.0)
+            page.setGraphicsEffect(eff)
+            self._fade_effects[page] = eff
+        a = QPropertyAnimation(eff, b"opacity", self)
+        a.setDuration(190)
+        a.setStartValue(0.0)
+        a.setEndValue(1.0)
+        a.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade_anim = a
+        a.start()
+
+    def _keep_on_screen(self):
+        self.move(self._clamped_rect(self.geometry()).topLeft())
+
+    # -------- 最小化 / 恢复动画
+    def animate_minimize(self):
+        """先把快照飞向任务栏，再真正最小化。"""
+        if not self._anim_on() or self.isMinimized():
+            self.showMinimized()
+            return
+        geo = self.frameGeometry()
+        try:
+            snap = self.grab()
+        except Exception:
+            self.showMinimized()
+            return
+        ov = _SnapWindow(snap, geo)
+        ov.show()
+        self._snap = ov
+        self.showMinimized()
+
+        scr = QGuiApplication.screenAt(geo.center()) or QApplication.primaryScreen()
+        sg, ag = scr.geometry(), scr.availableGeometry()
+        if ag.bottom() < sg.bottom():
+            cx, cy = geo.center().x(), sg.bottom() - 20
+        elif ag.top() > sg.top():
+            cx, cy = geo.center().x(), sg.top() + 20
+        elif ag.left() > sg.left():
+            cx, cy = sg.left() + 20, geo.center().y()
+        else:
+            cx, cy = sg.right() - 20, geo.center().y()
+        tw = max(54, int(geo.width() * 0.16))
+        th = max(40, int(geo.height() * 0.16))
+        tgt = QRect(int(cx - tw / 2), int(cy - th / 2), tw, th)
+
+        anim = QVariantAnimation(self)
+        anim.setDuration(240)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.InCubic)
+
+        def step(v):
+            v = float(v)
+            r = QRect(
+                int(geo.x() + (tgt.x() - geo.x()) * v),
+                int(geo.y() + (tgt.y() - geo.y()) * v),
+                max(1, int(geo.width() + (tgt.width() - geo.width()) * v)),
+                max(1, int(geo.height() + (tgt.height() - geo.height()) * v)))
+            ov.setGeometry(r)
+            ov.setWindowOpacity(max(0.0, 1.0 - v * 1.1))
+
+        def finish():
+            ov.close()
+            ov.deleteLater()
+            self._snap = None
+
+        anim.valueChanged.connect(step)
+        anim.finished.connect(finish)
+        self._mini_anim = anim
+        anim.start()
+
+    def changeEvent(self, e):
+        if e.type() == QEvent.WindowStateChange:
+            was, now = self._was_minimized, self.isMinimized()
+            if now and not was:
+                self._was_minimized = True
+            elif was and not now:
+                self._was_minimized = False
+                QTimer.singleShot(10, self._pop_in)
+        super().changeEvent(e)
+
+    def _pop_in(self):
+        """从任务栏恢复时：淡入 + 向上小位移。"""
+        if not self._anim_on() or not self.isVisible():
+            return
+        pos = self.pos()
+        self.setWindowOpacity(0.0)
+        self.move(pos.x(), pos.y() + 14)
+        a1 = QPropertyAnimation(self, b"pos", self)
+        a1.setDuration(220)
+        a1.setStartValue(QPoint(pos.x(), pos.y() + 14))
+        a1.setEndValue(pos)
+        a1.setEasingCurve(QEasingCurve.OutCubic)
+        a2 = QPropertyAnimation(self, b"windowOpacity", self)
+        a2.setDuration(200)
+        a2.setStartValue(0.0)
+        a2.setEndValue(1.0)
+        a2.setEasingCurve(QEasingCurve.OutCubic)
+        self._pop_anims = (a1, a2)
+        a1.start()
+        a2.start()
+
+    def _on_settings_saved(self, c):
+        self.cfg = config_store.load()
+        self.add_log("设置已保存")
+        if self.worker:
+            self.worker.cfg = self.cfg
 
     # -------- 托盘
     def _app_icon(self):
@@ -1208,9 +1608,12 @@ class MainWindow(QWidget):
             self.show_main()
 
     def show_main(self):
+        was_hidden = not self.isVisible()
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        if was_hidden and self._anim_on():
+            self._pop_in()
 
     def quit_app(self):
         self._quitting = True
@@ -1220,14 +1623,12 @@ class MainWindow(QWidget):
             self.tray.hide()
         QApplication.quit()
 
-    # -------- 历史
+    # -------- 历史 / 题库 / 设置（都在主窗口里切页，不再弹窗）
     def open_history(self):
-        dlg = HistoryDialog(self)
-        dlg.exec_()
+        self.show_page("history")
 
     def open_bank(self):
-        dlg = BankDialog(self)
-        dlg.exec_()
+        self.show_page("bank")
 
     # -------- 自动更新
     def check_updates_async(self, silent=True):
@@ -1374,12 +1775,8 @@ class MainWindow(QWidget):
 
     # -------- 设置
     def open_settings(self):
-        dlg = SettingsDialog(self.cfg, self)
-        if dlg.exec_() == QDialog.Accepted:
-            self.cfg = config_store.load()
-            self.add_log(f"设置已保存 → {config_store.config_path()}")
-            if self.worker:
-                self.worker.cfg = self.cfg
+        self.page_settings.cfg = dict(self.cfg)
+        self.show_page("settings")
 
     # -------- 区域
     def select_region(self):
@@ -1571,22 +1968,50 @@ class MainWindow(QWidget):
         self._re.start()
 
     def closeEvent(self, e):
-        # 有托盘：关闭 = 收到托盘，后台继续监控
+        # 关窗行为可在设置里选：最小化到托盘 / 直接退出 / 每次问
         if self.tray is not None and not self._quitting:
+            act = self.cfg.get("close_action", "tray")
+            if act == "ask":
+                act = "tray" if ask_yes(
+                    self, "关闭 Knowlib",
+                    "要最小化到托盘，让它在后台继续待命吗？\n\n选「否」= 直接退出程序。") else "exit"
+            if act == "tray":
+                e.ignore()
+                self._hide_to_tray()
+                return
             e.ignore()
-            self.hide()
-            if not self._tray_tip_shown:
-                self._tray_tip_shown = True
-                self.tray.showMessage(
-                    "Knowlib 还在后台",
-                    "点托盘图标可以再打开；要彻底退出请右键托盘 → 退出。",
-                    QSystemTrayIcon.Information, 3000)
+            self.quit_app()
             return
         self.stop_run()
         self.overlay.close()
         e.accept()
         if self.tray is None:
             QApplication.quit()
+
+    def _hide_to_tray(self):
+        if self._anim_on():
+            a = QPropertyAnimation(self, b"windowOpacity", self)
+            a.setDuration(140)
+            a.setStartValue(self.windowOpacity())
+            a.setEndValue(0.0)
+            a.setEasingCurve(QEasingCurve.InCubic)
+
+            def done():
+                self.hide()
+                self.setWindowOpacity(1.0)
+
+            a.finished.connect(done)
+            self._hide_anim = a
+            a.start()
+        else:
+            self.hide()
+        if not self._tray_tip_shown:
+            self._tray_tip_shown = True
+            if self.tray:
+                self.tray.showMessage(
+                    "Knowlib 还在后台",
+                    "点托盘图标可以再打开；要彻底退出请右键托盘 → 退出。",
+                    QSystemTrayIcon.Information, 3000)
 
 
 SINGLE_NAME = "knowlib-pc-single-instance"
@@ -1616,6 +2041,7 @@ def main():
         server = None
 
     w = MainWindow()
+    app.setWindowIcon(w._app_icon())
 
     if server is not None:
         def _on_conn():

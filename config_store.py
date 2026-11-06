@@ -1,4 +1,4 @@
-"""配置存取：数据统一放 %APPDATA%\\Knowlib（升级/卸载都不丢），便携模式可放 exe 同目录。
+﻿"""配置存取：数据统一放 %APPDATA%\\Knowlib（升级/卸载都不丢），便携模式可放 exe 同目录。
 
 迁移规则（首次运行新版本时自动执行，只复制不删除）：
   exe 同目录 / %APPDATA%\\XiaoTuanSouTi  →  %APPDATA%\\Knowlib
@@ -12,7 +12,7 @@ import sys
 APP_NAME = "XiaoTuanSouTi"      # 旧目录名，仅用于迁移
 BRAND = "Knowlib"               # 新数据目录名
 REG_NAME = "Knowlib"            # 开机自启的注册表项名
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.2"
 
 DATA_FILES = ("config.json", "bank.db", "history.jsonl")
 
@@ -45,6 +45,8 @@ DEFAULTS = {
     "dedupe": True,
     "bank_first": True,
     "check_update": True,
+    "close_action": "tray",
+    "animations": True,
     "region": {"left": 100, "top": 100, "width": 900, "height": 420},
     "prompt": (
         "你是解题助手。下面是一道题的截图文字识别结果。请：\n"
@@ -173,6 +175,94 @@ def clear_history():
         return True
     except Exception:
         return False
+
+
+def write_history(items):
+    """整份重写 history.jsonl（items 按时间从旧到新）。会先备份一份。"""
+    try:
+        p = history_path()
+        if os.path.exists(p):
+            shutil.copy2(p, p + ".bak")
+        with open(p, "w", encoding="utf-8") as f:
+            for it in items:
+                f.write(json.dumps(it, ensure_ascii=False) + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def dedupe_history(items, keep_valid=True, threshold=0.82):
+    """items 按“最新在前”。返回 (保留列表, 被丢掉的数量)。
+
+    同题识别多次会因 OCR 噪声（提交成功/输入答案/候选字乱码）变成不同 norm，
+    所以除了精确相同，还要用相似度合并（同一题的截图变体）。
+    """
+    from difflib import SequenceMatcher
+    kept, dropped = [], 0
+    norms = []
+    for it in items:
+        q = (it.get("q") or "").strip()
+        a = (it.get("a") or "").strip()
+        if keep_valid:
+            try:
+                import paper_export
+                if not paper_export.is_valid(q, a):
+                    dropped += 1
+                    continue
+            except Exception:
+                pass
+        try:
+            import paper_export
+            n = paper_export.norm_key(q)
+        except Exception:
+            n = q
+        dup = False
+        for old in norms:
+            if abs(len(old) - len(n)) > max(20, len(n) * 0.5):
+                continue
+            short, long_ = (n, old) if len(n) <= len(old) else (old, n)
+            r1 = SequenceMatcher(None, n, old).ratio()
+            # OCR 截断（只括到一半）也算重复
+            r2 = SequenceMatcher(None, short, long_[:len(short) + 2]).ratio()
+            if max(r1, r2) >= threshold:
+                dup = True
+                break
+        if dup:
+            dropped += 1
+            continue
+        kept.append(it)
+        norms.append(n)
+    return kept, dropped
+
+
+def clean_history(keep_valid=True, dedupe=True):
+    """清理历史：去重（同题只留最新）+ 丢掉“无法作答/界面文字”这类无效记录。"""
+    p = history_path()
+    if not os.path.exists(p):
+        return {"before": 0, "after": 0, "removed": 0, "dups": 0}
+    raw = []
+    try:
+        with open(p, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return {"before": 0, "after": 0, "removed": 0, "dups": 0}
+
+    before = len(raw)
+    newest_first = list(reversed(raw))
+    if dedupe:
+        kept, dropped = dedupe_history(newest_first, keep_valid=keep_valid)
+    else:
+        kept, dropped = newest_first, 0
+    kept.reverse()                     # 回到从旧到新
+    write_history(kept)
+    return {"before": before, "after": len(kept), "removed": dropped, "dups": dropped}
 
 
 # ---------------------------------------------------------------- 开机自启
