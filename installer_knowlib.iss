@@ -1,14 +1,14 @@
 ﻿[Setup]
 AppId={{8E1B9C11-6A2F-4C0E-A4D1-7B2C5E9F3A21}
 AppName=Knowlib
-AppVersion=1.2.4
+AppVersion=1.2.5
 AppPublisher=Ching & 小团
 AppPublisherURL=https://knowlib.fun
 DefaultDirName={autopf}\Knowlib
 DefaultGroupName=Knowlib
 DisableProgramGroupPage=yes
 OutputDir=D:\SouTi\installer
-OutputBaseFilename=Knowlib-PC-1.2.4-setup
+OutputBaseFilename=Knowlib-PC-1.2.5-setup
 SetupIconFile=D:\SouTi\app.ico
 Compression=lzma2/max
 SolidCompression=yes
@@ -30,6 +30,7 @@ Name: "{autodesktop}\Knowlib"; Filename: "{app}\Knowlib.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\Knowlib.exe"; Description: "立即运行 Knowlib"; Flags: nowait postinstall skipifsilent
+
 
 
 

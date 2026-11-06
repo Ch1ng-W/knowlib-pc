@@ -11,7 +11,7 @@ import traceback
 # ⚠️ 先导入 OCR（onnxruntime），再导入 PyQt5，否则会 0xC0000005 崩溃
 import ocr_ai  # noqa: F401  (顺序敏感)
 
-from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QObject, QTimer, QPoint, QRect, QSize,
+from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QObject, QTimer, QPoint, QRect, QRectF, QSize,
                           QEvent, QPropertyAnimation, QEasingCurve, QVariantAnimation,
                           QAbstractAnimation)
 from PyQt5.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QIcon, QPixmap,
@@ -30,8 +30,8 @@ import updater
 
 APP_TITLE = "Knowlib"
 
-# 窗口四周留给阴影的透明边距（同时是原生拖拽缩放的命中区）
-SHADOW_MARGIN = 22
+# 窗口四周边距（现由系统 DWM 画阴影/圆角，不再自绘，所以为 0）
+SHADOW_MARGIN = 0
 
 # Win32：给无边框窗口加回原生 WS_THICKFRAME，
 # 这样系统自带的拖拽缩放 / Aero Snap / 最小化还原动画都能用
@@ -45,7 +45,7 @@ WM_NCHITTEST = 0x0084
 
 
 def enable_native_frame(widget):
-    """加上原生缩放边框样式（只留能力，不画系统标题栏）。"""
+    """加上原生缩放边框样式（只留能力，不画系统标题栏），并让 DWM 画圆角。"""
     try:
         hwnd = int(widget.winId())
         u = ctypes.windll.user32
@@ -53,6 +53,13 @@ def enable_native_frame(widget):
         u.SetWindowLongW(hwnd, GWL_STYLE,
                          style | WS_THICKFRAME | WS_MINIMIZEBOX
                          | WS_MAXIMIZEBOX | WS_SYSMENU)
+        # DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2
+        try:
+            val = ctypes.c_int(2)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 33, ctypes.byref(val), ctypes.sizeof(val))
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -1255,15 +1262,15 @@ class MainWindow(QWidget):
 
         self.setWindowTitle(APP_TITLE)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.resize(470 + SHADOW_MARGIN * 2, 492 + SHADOW_MARGIN * 2)
-        self.setMinimumSize(430 + SHADOW_MARGIN * 2, 404 + SHADOW_MARGIN * 2)
+        self.setObjectName("mainWin")
+        self.resize(470, 492)
+        self.setMinimumSize(430, 404)
         enable_native_frame(self)
         self.setStyleSheet(
+            "QWidget#mainWin{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 #171a21,stop:1 #0f1115);}"
             "QWidget{color:#e6e9ef;font-family:'Microsoft YaHei';}"
-            "QFrame#shell{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
-            "stop:0 #171a21,stop:1 #0f1115);"
-            "border-radius:16px;border:1px solid rgba(255,255,255,20);}"
+            "QFrame#shell{background:transparent;border:none;}"
             "QFrame#card{background:rgba(255,255,255,9);"
             "border:1px solid rgba(255,255,255,14);border-radius:12px;}"
             "QLabel{color:#e6e9ef;background:transparent;}"
@@ -1304,11 +1311,8 @@ class MainWindow(QWidget):
         self.shell.setObjectName("shell")
         outer.addWidget(self.shell)
 
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(34)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(0, 0, 0, 170))
-        self.shell.setGraphicsEffect(shadow)
+        # ⚠️ 不再用 QGraphicsDropShadowEffect：效果层 + 悬停重绘会让页面错位
+        # 阴影改在 paintEvent 里自己画（见 MainWindow.paintEvent）
 
         lay = QVBoxLayout(self.shell)
         lay.setContentsMargins(16, 4, 16, 14)
@@ -1505,20 +1509,8 @@ class MainWindow(QWidget):
         return QRect(x, y, r.width(), r.height())
 
     def _fade_in(self, page):
-        """页面内容淡入（效果对象常驻，避免动画中途被销毁）。"""
-        eff = self._fade_effects.get(page)
-        if eff is None:
-            eff = QGraphicsOpacityEffect(page)
-            eff.setOpacity(1.0)
-            page.setGraphicsEffect(eff)
-            self._fade_effects[page] = eff
-        a = QPropertyAnimation(eff, b"opacity", self)
-        a.setDuration(190)
-        a.setStartValue(0.0)
-        a.setEndValue(1.0)
-        a.setEasingCurve(QEasingCurve.OutCubic)
-        self._fade_anim = a
-        a.start()
+        """页面淡入：已停用。QGraphicsOpacityEffect 会让悬停重绘错位（实测 21 万像素错乱）。"""
+        return
 
     def _keep_on_screen(self):
         self.move(self._clamped_rect(self.geometry()).topLeft())
@@ -1546,7 +1538,7 @@ class MainWindow(QWidget):
                     ctypes.windll.user32.GetWindowRect(msg.hWnd, ctypes.byref(r))
                     x = ctypes.c_short(int(msg.lParam) & 0xFFFF).value
                     y = ctypes.c_short((int(msg.lParam) >> 16) & 0xFFFF).value
-                    b = SHADOW_MARGIN + 6
+                    b = 8
                     l = x < r.left + b
                     rr = x >= r.right - b
                     t = y < r.top + b
