@@ -15,7 +15,8 @@ from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QObject, QTimer, QPoint, QRec
                           QEvent, QPropertyAnimation, QEasingCurve, QVariantAnimation,
                           QAbstractAnimation)
 from PyQt5.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QIcon, QPixmap,
-                         QTextCursor, QGuiApplication)
+                         QTextCursor, QGuiApplication, QDesktopServices)
+from PyQt5.QtCore import QUrl
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QDialog, QLineEdit, QComboBox, QFormLayout, QMessageBox,
@@ -386,120 +387,299 @@ class AnswerOverlay(QWidget):
 
 
 # ---------------------------------------------------------------- 设置对话框
+class WinCombo(QComboBox):
+    """Win11 风格下拉框：自绘 chevron，不用系统老式箭头。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        col = QColor(self.palette().color(self.foregroundRole()))
+        pen = QPen(col)
+        pen.setWidthF(1.5)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        cx = self.width() - 15
+        cy = self.height() / 2.0 - 1
+        p.drawLine(QPoint(int(cx - 4), int(cy - 2)), QPoint(int(cx), int(cy + 2)))
+        p.drawLine(QPoint(int(cx), int(cy + 2)), QPoint(int(cx + 4), int(cy - 2)))
+        p.end()
+
+
+class KeyCapture(QDialog):
+    """按一下要绑定的键。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.key_name = None
+        self.setWindowTitle("按下新的快捷键")
+        self.setFixedSize(320, 120)
+        lay = QVBoxLayout(self)
+        tip = QLabel("请按 F1 ~ F12 中的一个键\n（Esc 取消）")
+        tip.setAlignment(Qt.AlignCenter)
+        lay.addWidget(tip)
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        if k == Qt.Key_Escape:
+            self.reject()
+            return
+        if Qt.Key_F1 <= k <= Qt.Key_F12:
+            self.key_name = "F%d" % (k - Qt.Key_F1 + 1)
+            self.accept()
+            return
+        super().keyPressEvent(e)
+
+
+HOTKEY_ITEMS = (
+    ("region", "框选区域"),
+    ("pause", "暂停 / 继续"),
+    ("shot", "立即识别"),
+    ("again", "重问一次"),
+    ("overlay", "显示 / 隐藏答案窗"),
+)
+
+
 class SettingsPage(QWidget):
+    """设置：二级导航（常规 / 模型与密钥 / 快捷键）。"""
+
     def __init__(self, cfg, parent=None, on_saved=None, on_back=None):
         super().__init__(parent)
         self.cfg = dict(cfg)
         self._on_saved = on_saved
         self._on_back = on_back
+        self._theme = getattr(parent, "theme", LIGHT)
         self.setObjectName("settingsPage")
         self.setStyleSheet("")
 
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(12)
+        _title = QLabel("设置")
+        _title.setObjectName("pageTitle")
+        outer.addWidget(_title)
+
+        lay = QHBoxLayout()
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(12)
-        _t = QLabel("设置")
-        _t.setObjectName("pageTitle")
-        lay.addWidget(_t)
-        tip = QLabel("① 选服务商 → ② 填 Key → ③ 点「测试连接」看到成功再保存")
-        tip.setStyleSheet("color:#8fb6ff;font-size:12px;")
-        lay.addWidget(tip)
+        lay.setSpacing(18)
 
-        form = QFormLayout()
-        form.setSpacing(10)
+        # 二级导航
+        self.subnav = QListWidget()
+        self.subnav.setObjectName("subNav")
+        self.subnav.setFixedWidth(168)
+        self.subnav.setFocusPolicy(Qt.NoFocus)
+        self.subnav.addItems(["常规", "模型与密钥", "快捷键"])
+        self.subnav.setCurrentRow(0)
+        lay.addWidget(self.subnav)
 
-        self.provider = QComboBox()
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(12)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_general())
+        self.stack.addWidget(self._build_model())
+        self.stack.addWidget(self._build_hotkeys())
+        right.addWidget(self.stack, 1)
+        lay.addLayout(right, 1)
+        outer.addLayout(lay, 1)
+
+        self.subnav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.provider.currentTextChanged.connect(self._on_provider)
+
+    # ---------------- 常规
+    def _build_general(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
+
+        card = QFrame()
+        card.setObjectName("card")
+        c = QVBoxLayout(card)
+        c.setContentsMargins(16, 14, 16, 14)
+        c.setSpacing(12)
+
+        t = QLabel("启动与关闭")
+        t.setObjectName("sectionTitle")
+        c.addWidget(t)
+
+        self.autostart = QCheckBox("开机自动启动（静默进托盘）")
+        self.autostart.setChecked(config_store.autostart_enabled())
+        c.addWidget(self.autostart)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        lb = QLabel("关闭按钮")
+        lb.setMinimumWidth(96)
+        self.close_action = WinCombo()
+        self.close_action.addItem("最小化到托盘", "tray")
+        self.close_action.addItem("直接退出程序", "exit")
+        self.close_action.addItem("每次询问我", "ask")
+        i = self.close_action.findData(self.cfg.get("close_action", "tray"))
+        self.close_action.setCurrentIndex(i if i >= 0 else 0)
+        row.addWidget(lb)
+        row.addWidget(self.close_action, 1)
+        c.addLayout(row)
+
+        self.animations = QCheckBox("界面动画")
+        self.animations.setChecked(bool(self.cfg.get("animations", True)))
+        c.addWidget(self.animations)
+
+        self.check_update = QCheckBox("启动时检查更新")
+        self.check_update.setChecked(bool(self.cfg.get("check_update", True)))
+        c.addWidget(self.check_update)
+
+        v.addWidget(card)
+        v.addStretch(1)
+        return w
+
+    # ---------------- 模型与密钥
+    def _build_model(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
+
+        card = QFrame()
+        card.setObjectName("card")
+        c = QVBoxLayout(card)
+        c.setContentsMargins(16, 14, 16, 14)
+        c.setSpacing(10)
+
+        t = QLabel("模型服务")
+        t.setObjectName("sectionTitle")
+        c.addWidget(t)
+
+        self.provider = WinCombo()
         self.provider.addItems(list(config_store.PROVIDERS.keys()))
         if self.cfg.get("provider") in config_store.PROVIDERS:
             self.provider.setCurrentText(self.cfg["provider"])
-        form.addRow("服务商", self.provider)
+        c.addLayout(self._labeled("服务商", self.provider))
 
         self.base_url = QLineEdit(self.cfg.get("base_url", ""))
         self.base_url.setPlaceholderText("https://api.deepseek.com/v1")
-        form.addRow("API 端点", self.base_url)
+        c.addLayout(self._labeled("API 端点", self.base_url))
 
         self.api_key = QLineEdit(self.cfg.get("api_key", ""))
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("sk-...")
-        key_row = QHBoxLayout()
-        key_row.addWidget(self.api_key)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self.api_key, 1)
         self.show_key = QPushButton("显示")
         self.show_key.setCheckable(True)
-        self.show_key.setFixedWidth(58)
+        self.show_key.setFixedWidth(60)
         self.show_key.toggled.connect(
             lambda on: self.api_key.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
-        key_row.addWidget(self.show_key)
-        kw = QWidget()
-        kw.setLayout(key_row)
-        key_row.setContentsMargins(0, 0, 0, 0)
-        form.addRow("API Key", kw)
+        row.addWidget(self.show_key)
+        holder = QWidget()
+        holder.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        c.addLayout(self._labeled("API Key", holder))
 
         self.model = QLineEdit(self.cfg.get("model", ""))
         self.model.setPlaceholderText("deepseek-chat")
-        form.addRow("模型", self.model)
+        c.addLayout(self._labeled("模型", self.model))
 
         self.interval = QSpinBox()
         self.interval.setRange(500, 5000)
         self.interval.setSingleStep(100)
         self.interval.setValue(int(float(self.cfg.get("scan_interval", 1.2)) * 1000))
         self.interval.setSuffix(" ms")
-        form.addRow("扫描间隔", self.interval)
-
-        self.autostart = QCheckBox("开机自动启动（静默进托盘）")
-        self.autostart.setChecked(config_store.autostart_enabled())
-        form.addRow("启动", self.autostart)
+        c.addLayout(self._labeled("扫描间隔", self.interval))
 
         self.bank_first = QCheckBox("优先查本地题库（命中不花 token）")
         self.bank_first.setChecked(bool(self.cfg.get("bank_first", True)))
-        form.addRow("题库", self.bank_first)
+        c.addWidget(self.bank_first)
 
-        self.check_update = QCheckBox("启动时检查更新")
-        self.check_update.setChecked(bool(self.cfg.get("check_update", True)))
-        form.addRow("更新", self.check_update)
+        v.addWidget(card)
 
-        self.close_action = QComboBox()
-        self.close_action.addItem("最小化到托盘（后台继续待命）", "tray")
-        self.close_action.addItem("直接退出程序", "exit")
-        self.close_action.addItem("每次问我", "ask")
-        _ci = self.close_action.findData(self.cfg.get("close_action", "tray"))
-        self.close_action.setCurrentIndex(_ci if _ci >= 0 else 0)
-        form.addRow("关闭按钮", self.close_action)
+        card2 = QFrame()
+        card2.setObjectName("card")
+        c2 = QVBoxLayout(card2)
+        c2.setContentsMargins(16, 14, 16, 14)
+        c2.setSpacing(10)
+        t2 = QLabel("解题提示词")
+        t2.setObjectName("sectionTitle")
+        c2.addWidget(t2)
+        self.prompt = QPlainTextEdit(self.cfg.get("prompt", ""))
+        self.prompt.setMinimumHeight(120)
+        c2.addWidget(self.prompt)
+        v.addWidget(card2, 1)
 
-        self.animations = QCheckBox("界面动画（页面切换 / 淡入）")
-        self.animations.setChecked(bool(self.cfg.get("animations", True)))
-        form.addRow("外观", self.animations)
-
-        lay.addLayout(form)
-
-        self.test_result = QLabel("尚未测试")
-        self.test_result.setStyleSheet("color:#8a8f98;")
-        lay.addWidget(self.test_result)
-
-        row = QHBoxLayout()
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
         self.btn_test = QPushButton("测试连接")
         self.btn_test.clicked.connect(self.do_test)
-        self.btn_upd = QPushButton("检查更新")
-        self.btn_upd.clicked.connect(self.do_check_update)
-        self.btn_save = QPushButton("保存")
-        self.btn_save.clicked.connect(self.do_save)
-        self.btn_cancel = QPushButton("取消")
-        self.btn_cancel.clicked.connect(self._go_back)
-        row.addWidget(self.btn_test)
-        row.addWidget(self.btn_upd)
-        row.addStretch(1)
-        row.addWidget(self.btn_cancel)
-        row.addWidget(self.btn_save)
-        lay.addLayout(row)
+        self.test_result = QLabel("尚未测试")
+        self.test_result.setObjectName("sub")
+        row2.addWidget(self.btn_test)
+        row2.addWidget(self.test_result, 1)
+        v.addLayout(row2)
+        return w
 
-        adv = QLabel("解题提示词（可改）")
-        adv.setStyleSheet("color:#8a8f98;font-size:12px;margin-top:6px;")
-        lay.addWidget(adv)
-        self.prompt = QPlainTextEdit(self.cfg.get("prompt", ""))
-        self.prompt.setFixedHeight(110)
-        lay.addWidget(self.prompt)
+    def _labeled(self, text, widget):
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        lb = QLabel(text)
+        lb.setMinimumWidth(96)
+        row.addWidget(lb)
+        row.addWidget(widget, 1)
+        return row
 
-        self.provider.currentTextChanged.connect(self._on_provider)
+    # ---------------- 快捷键
+    def _build_hotkeys(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
 
+        hint = QLabel("点右边的按键可以改成 F1~F12；截图/答题时用得到。")
+        hint.setObjectName("sub")
+        v.addWidget(hint)
+
+        card = QFrame()
+        card.setObjectName("card")
+        c = QVBoxLayout(card)
+        c.setContentsMargins(16, 14, 16, 14)
+        c.setSpacing(10)
+
+        hks = dict(self.cfg.get("hotkeys") or {})
+        self._hk_buttons = {}
+        for action, label in HOTKEY_ITEMS:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            lb = QLabel(label)
+            row.addWidget(lb, 1)
+            b = QPushButton(hks.get(action, ""))
+            b.setFixedWidth(96)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, a=action: self._capture(a))
+            row.addWidget(b)
+            self._hk_buttons[action] = b
+            c.addLayout(row)
+        v.addWidget(card)
+        v.addStretch(1)
+
+        reset = QPushButton("恢复默认 F1~F5")
+        reset.clicked.connect(self._reset_hotkeys)
+        v.addWidget(reset, 0, Qt.AlignLeft)
+        return w
+
+    def _capture(self, action):
+        dlg = KeyCapture(self)
+        if dlg.exec_() == QDialog.Accepted and dlg.key_name:
+            self._hk_buttons[action].setText(dlg.key_name)
+
+    def _reset_hotkeys(self):
+        for i, (action, _) in enumerate(HOTKEY_ITEMS):
+            self._hk_buttons[action].setText("F%d" % (i + 1))
+
+    # ---------------- 逻辑
     def _on_provider(self, name):
         p = config_store.PROVIDERS.get(name) or {}
         if p.get("base_url"):
@@ -522,44 +702,29 @@ class SettingsPage(QWidget):
         c["check_update"] = self.check_update.isChecked()
         c["close_action"] = self.close_action.currentData() or "tray"
         c["animations"] = self.animations.isChecked()
+        hk = dict(c.get("hotkeys") or {})
+        for action, _ in HOTKEY_ITEMS:
+            b = self._hk_buttons.get(action)
+            if b and b.text().startswith("F"):
+                hk[action] = b.text()
+        c["hotkeys"] = hk
         return c
 
     def do_test(self):
         c = self._collect()
         if not c["base_url"] or not c["model"]:
             self.test_result.setText("请先填 API 端点和模型")
-            self.test_result.setStyleSheet(f"color:{COLOR_WARN};")
+            self.test_result.setForegroundRole(self.test_result.foregroundRole())
             return
         self.btn_test.setEnabled(False)
-        self.test_result.setText("正在测试…（最多等 30 秒）")
-        self.test_result.setStyleSheet(f"color:{COLOR_IDLE};")
+        self.test_result.setText("正在测试…（最多 30 秒）")
         QApplication.processEvents()
         ok, msg, cost = ocr_ai.AiClient(c).test_connection()
         self.btn_test.setEnabled(True)
         if ok:
             self.test_result.setText(f"✅ {msg} · {cost:.2f}s")
-            self.test_result.setStyleSheet(f"color:{COLOR_OK};")
         else:
             self.test_result.setText(f"❌ {msg}")
-            self.test_result.setStyleSheet(f"color:{COLOR_ERR};")
-
-    def do_check_update(self):
-        self.btn_upd.setEnabled(False)
-        self.test_result.setText("正在查 GitHub…")
-        self.test_result.setStyleSheet(f"color:{COLOR_IDLE};")
-        QApplication.processEvents()
-        r = updater.check()
-        self.btn_upd.setEnabled(True)
-        if not r.get("ok"):
-            self.test_result.setText("检查失败：" + str(r.get("error"))[:80])
-            self.test_result.setStyleSheet(f"color:{COLOR_ERR};")
-            return
-        if r.get("has_update"):
-            self.test_result.setText(f"发现新版本 v{r['latest']}（当前 v{updater.current_version()}）")
-            self.test_result.setStyleSheet(f"color:{COLOR_OK};")
-        else:
-            self.test_result.setText(f"已是最新版本 v{updater.current_version()} ✓")
-            self.test_result.setStyleSheet(f"color:{COLOR_OK};")
 
     def do_save(self):
         c = self._collect()
@@ -581,14 +746,14 @@ class SettingsPage(QWidget):
         self.cfg = c
         if self._on_saved:
             self._on_saved(c)
-        self._go_back()
+        if self._on_back:
+            self._on_back()
 
     def _go_back(self):
         if self._on_back:
             self._on_back()
 
 
-# ---------------------------------------------------------------- 历史记录窗
 class HistoryPage(QWidget):
     """浏览 history.jsonl：左边列表，右边题目 + 答案（内嵌在主窗口里）。"""
 
@@ -1256,6 +1421,16 @@ def build_qss(t):
         f"QPushButton#navItem:hover{{background:{t['hover']};}}"
         f"QPushButton#navItem:checked{{background:{t['sel']};font-weight:600;}}"
         f"QLabel#pageTitle{{font-size:24px;font-weight:600;color:{t['text']};}}"
+        "QPushButton:focus{outline:none;}"
+        f"QListWidget#subNav{{background:transparent;border:none;padding:0px;}}"
+        f"QListWidget#subNav::item{{padding:8px 10px;border-radius:4px;color:{t['text']};}}"
+        f"QListWidget#subNav::item:hover{{background:{t['hover']};}}"
+        f"QListWidget#subNav::item:selected{{background:{t['sel']};font-weight:600;}}"
+        "QComboBox::drop-down{border:none;width:26px;}"
+        "QComboBox::down-arrow{image:none;width:0px;height:0px;}"
+        f"QComboBox QAbstractItemView{{background:{t['card']};color:{t['text']};"
+        f"border:1px solid {t['border']};border-radius:6px;padding:4px;outline:0;"
+        f"selection-background-color:{t['sel']};selection-color:{t['text']};}}"
         f"QFrame#card{{background:{t['card']};border:1px solid {t['border']};border-radius:8px;}}"
         f"QLabel#sectionTitle{{font-size:14px;font-weight:600;color:{t['text']};}}"
         f"QLabel#sub{{font-size:12px;color:{t['muted']};}}"
@@ -1308,8 +1483,114 @@ def apply_backdrop(widget, dark=True):
         dw.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(v), ctypes.sizeof(v))
         v2 = ctypes.c_int(2)                    # DWMWA_SYSTEMBACKDROP_TYPE = 38, Mica = 2
         dw.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(v2), ctypes.sizeof(v2))
+        # 固定标题栏颜色：否则会被系统强调色染成一条蓝
+        cap = ctypes.c_int(0x00202020 if dark else 0x00F3F3F3)   # COLORREF 0x00BBGGRR
+        dw.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cap), ctypes.sizeof(cap))
+        txt = ctypes.c_int(0x00FFFFFF if dark else 0x001B1B1B)
+        dw.DwmSetWindowAttribute(hwnd, 36, ctypes.byref(txt), ctypes.sizeof(txt))
+        bd = ctypes.c_int(0x002B2B2B if dark else 0x00E5E5E5)
+        dw.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(bd), ctypes.sizeof(bd))
     except Exception:
         pass
+
+
+class AboutPage(QWidget):
+    """关于：版本 / 更新 / 链接 / 作者。"""
+
+    def __init__(self, parent=None, on_check=None):
+        super().__init__(parent)
+        self.setObjectName("aboutPage")
+        self.setStyleSheet("")
+        self._on_check = on_check
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
+
+        card = QFrame()
+        card.setObjectName("card")
+        c = QVBoxLayout(card)
+        c.setContentsMargins(20, 18, 20, 18)
+        c.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setSpacing(14)
+        logo = QLabel()
+        pm = QPixmap(resource_path("logo.png"))
+        if not pm.isNull():
+            logo.setPixmap(pm.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        head.addWidget(logo)
+        box = QVBoxLayout()
+        box.setSpacing(2)
+        nm = QLabel("Knowlib")
+        nm.setObjectName("pageTitle")
+        box.addWidget(nm)
+        ver = QLabel(f"版本 {config_store.APP_VERSION}")
+        ver.setObjectName("sub")
+        box.addWidget(ver)
+        head.addLayout(box)
+        head.addStretch(1)
+        self.btn_update = QPushButton("检查更新")
+        self.btn_update.clicked.connect(self._check)
+        head.addWidget(self.btn_update)
+        c.addLayout(head)
+
+        self.status = QLabel("")
+        self.status.setObjectName("sub")
+        c.addWidget(self.status)
+        v.addWidget(card)
+
+        card2 = QFrame()
+        card2.setObjectName("card")
+        c2 = QVBoxLayout(card2)
+        c2.setContentsMargins(20, 16, 20, 16)
+        c2.setSpacing(10)
+
+        t = QLabel("相关链接")
+        t.setObjectName("sectionTitle")
+        c2.addWidget(t)
+        c2.addLayout(self._link_row("项目主页", "https://knowlib.fun"))
+        c2.addLayout(self._link_row("GitHub", "https://github.com/Ch1ng-W/knowlib-pc"))
+        c2.addLayout(self._link_row("反馈邮箱", "mailto:2391813554@qq.com"))
+        v.addWidget(card2)
+
+        card3 = QFrame()
+        card3.setObjectName("card")
+        c3 = QVBoxLayout(card3)
+        c3.setContentsMargins(20, 16, 20, 16)
+        c3.setSpacing(6)
+        t3 = QLabel("关于作者")
+        t3.setObjectName("sectionTitle")
+        c3.addWidget(t3)
+        a = QLabel("由 Ching 和小团 同步开发")
+        c3.addWidget(a)
+        b = QLabel("截图识别 → AI 解题 → 本地题库沉淀，全部在这台电脑上完成。")
+        b.setObjectName("sub")
+        b.setWordWrap(True)
+        c3.addWidget(b)
+        v.addWidget(card3)
+        v.addStretch(1)
+
+    def _link_row(self, label, url):
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        lb = QLabel(label)
+        lb.setMinimumWidth(96)
+        row.addWidget(lb)
+        val = QLabel(url.replace("mailto:", ""))
+        val.setObjectName("sub")
+        val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        row.addWidget(val, 1)
+        btn = QPushButton("打开")
+        btn.setFixedWidth(72)
+        btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        row.addWidget(btn)
+        return row
+
+    def _check(self):
+        self.status.setText("正在检查更新…")
+        if self._on_check:
+            self._on_check(self.status)
 
 
 class MainWindow(QWidget):
@@ -1415,12 +1696,14 @@ class MainWindow(QWidget):
         for key, icon, text in (("home", "\ue80f", "答题"),
                                 ("history", "\ue81c", "历史记录"),
                                 ("bank", "\ue8f1", "题库"),
-                                ("settings", "\ue713", "设置")):
+                                ("settings", "\ue713", "设置"),
+                                ("about", "\ue946", "关于")):
             b = QPushButton(text)
             b.setIcon(glyph_icon(icon, self.theme["text"], 16))
             b.setIconSize(QSize(16, 16))
             b.setObjectName("navItem")
             b.setCheckable(True)
+            b.setFocusPolicy(Qt.NoFocus)
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _=False, k=key: self.show_page(k))
             sl.addWidget(b)
@@ -1554,7 +1837,8 @@ class MainWindow(QWidget):
         self.page_settings_scroll.setWidgetResizable(True)
         self.page_settings_scroll.setFrameShape(QFrame.NoFrame)
         self.page_settings_scroll.setWidget(self.page_settings)
-        for p in (self.page_history, self.page_bank, self.page_settings_scroll):
+        self.page_about = AboutPage(self, on_check=self._about_check)
+        for p in (self.page_history, self.page_bank, self.page_settings_scroll, self.page_about):
             self.stack.addWidget(p)
         self.stack.setCurrentWidget(self.page_home)
         self.nav["home"].setChecked(True)
@@ -1589,7 +1873,8 @@ class MainWindow(QWidget):
     def _show_page(self, name, animate=True):
         page = {"home": self.page_home, "history": self.page_history,
                 "bank": self.page_bank,
-                "settings": getattr(self, "page_settings_scroll", self.page_settings)}.get(name)
+                "settings": getattr(self, "page_settings_scroll", self.page_settings),
+                "about": getattr(self, "page_about", None)}.get(name)
         if page is None:
             return
         self.stack.setCurrentWidget(page)
@@ -1686,9 +1971,37 @@ class MainWindow(QWidget):
         a1.start()
         a2.start()
 
+    def _about_check(self, label):
+        """关于页的「检查更新」（后台线程，避免卡界面）。"""
+        label.setText("正在检查更新…")
+
+        class Chk(QThread):
+            done = pyqtSignal(dict)
+
+            def run(self):
+                self.done.emit(updater.check())
+
+        t = Chk(self)
+
+        def got(r):
+            if not r.get("ok"):
+                label.setText("检查失败：" + str(r.get("error"))[:60])
+            elif r.get("has_update"):
+                self._update_info = r
+                label.setText(f"发现新版本 v{r['latest']}，可在左侧「发现新版本」下载")
+                self.btn_update.setText(f"更新 {r['latest']}")
+                self.btn_update.setVisible(True)
+            else:
+                label.setText(f"已是最新版本 v{updater.current_version()}")
+
+        t.done.connect(got)
+        self._about_t = t
+        t.start()
+
     def _on_settings_saved(self, c):
         self.cfg = config_store.load()
         self.add_log("设置已保存")
+        self.setup_hotkeys()
         if self.worker:
             self.worker.cfg = self.cfg
 
@@ -1873,25 +2186,39 @@ class MainWindow(QWidget):
 
     # -------- 热键
     def _on_hotkey(self, name):
-        {"f1": self.select_region, "f2": self.toggle_pause, "f3": self.shot_once,
+        {"region": self.select_region, "pause": self.toggle_pause,
+         "shot": self.shot_once, "again": self.ask_again,
+         "overlay": self.toggle_overlay,
+         "f1": self.select_region, "f2": self.toggle_pause, "f3": self.shot_once,
          "f4": self.ask_again, "f5": self.toggle_overlay}.get(name, lambda: None)()
 
     def setup_hotkeys(self):
         self.hotkey.connect(self._on_hotkey)  # 跨线程：热键线程 → Qt 主线程
         try:
             from pynput import keyboard as pk
-            keymap = {pk.Key.f1: 'f1', pk.Key.f2: 'f2', pk.Key.f3: 'f3',
-                      pk.Key.f4: 'f4', pk.Key.f5: 'f5'}
+            hks = dict(self.cfg.get("hotkeys") or {})
+            keymap = {}
+            for action, kn in hks.items():
+                k = getattr(pk.Key, str(kn).lower(), None)
+                if k is not None:
+                    keymap[k] = action
 
             def on_press(key):
                 name = keymap.get(key)
                 if name:
                     self.hotkey.emit(name)
 
+            if getattr(self, "_listener", None) is not None:
+                try:
+                    self._listener.stop()
+                except Exception:
+                    pass
             self._listener = pk.Listener(on_press=on_press)
             self._listener.daemon = True
             self._listener.start()
-            self.add_log("热键已注册：F1/F2/F3/F4/F5")
+            shown = "/".join(hks.get(a, "?") for a, _ in
+                             (("region", 0), ("pause", 0), ("shot", 0), ("again", 0), ("overlay", 0)))
+            self.add_log(f"热键已注册：{shown}")
         except Exception as e:
             self.add_log(f"热键注册失败：{e}")
 
