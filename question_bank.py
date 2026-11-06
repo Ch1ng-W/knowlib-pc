@@ -256,4 +256,102 @@ def import_csv(path):
         return False, str(e)
 
 
+# ---------------------------------------------------------------- 多格式导入
+_Q_START = re.compile(
+    r"^(#{1,6}\s|第\s*\d+\s*题|\*\*\s*\d+\s*[.、)）]|\d+\s*[.、)）]\s|【\s*题)")
+
+
+def _parse_block(block):
+    """一块文本 → (题目, 答案, 解析)，没有「答案：」就返回 None。"""
+    b = (block or "").strip()
+    if not b:
+        return None
+    m = re.search(r"答\s*案\s*[:：]", b)
+    if not m:
+        return None
+    q = b[:m.start()].strip()
+    rest = b[m.end():].strip()
+    q = re.sub(r"^#{1,6}\s*", "", q, flags=re.M)
+    q = re.sub(r"^\*\*(.+?)\*\*\s*$", r"\1", q, flags=re.M).strip()
+    mm = re.search(r"解\s*析\s*[:：]", rest)
+    if mm:
+        ans = rest[:mm.start()].strip()
+        sol = rest[mm.end():].strip()
+    else:
+        ans, sol = rest, ""
+    if len(normalize(q)) < 4 or not (ans or sol):
+        return None
+    return q, ans, sol
+
+
+def import_md_txt(path):
+    """Markdown / 纯文本导入：按题号切块，靠「答案：」定位答案。"""
+    ok = 0
+    try:
+        txt = open(path, "r", encoding="utf-8-sig", errors="replace").read()
+    except Exception as e:
+        return False, f"读不了文件：{e}"
+    blocks, cur = [], []
+    for ln in txt.replace("\r", "").split("\n"):
+        st = ln.strip()
+        if _Q_START.match(st) and cur and any("答案" in x for x in cur):
+            blocks.append("\n".join(cur))
+            cur = [ln]
+        else:
+            cur.append(ln)
+    if cur:
+        blocks.append("\n".join(cur))
+
+    for b in blocks:
+        r = _parse_block(b)
+        if not r:
+            continue
+        q, ans, sol = r
+        body = f"答案：{ans}"
+        if sol:
+            body += f"\n解析：{sol}"
+        if save(q, body, source="import"):
+            ok += 1
+    return True, ok
+
+
+def import_json(path):
+    ok = 0
+    try:
+        import json
+        data = json.load(open(path, "r", encoding="utf-8-sig"))
+    except Exception as e:
+        return False, f"JSON 解析失败：{e}"
+    if isinstance(data, dict):
+        data = data.get("items") or data.get("questions") or []
+    if not isinstance(data, list):
+        return False, "JSON 里没有题目列表"
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        q = row.get("q") or row.get("question") or row.get("q_text") or ""
+        a = row.get("a") or row.get("answer") or ""
+        sol = row.get("solution") or row.get("explain") or ""
+        if q and (a or sol):
+            body = f"答案：{a}"
+            if sol:
+                body += f"\n解析：{sol}"
+            if save(q, body, source="import"):
+                ok += 1
+    return True, ok
+
+
+def import_any(path):
+    """按后缀自动选择导入方式。返回 (ok, n_or_msg)。"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".csv":
+        return import_csv(path)
+    if ext == ".json":
+        return import_json(path)
+    if ext in (".md", ".markdown", ".txt", ".text"):
+        return import_md_txt(path)
+    # 兜底：先当文本试
+    return import_md_txt(path)
+
+
 init_db()

@@ -12,7 +12,7 @@ import sys
 APP_NAME = "XiaoTuanSouTi"      # 旧目录名，仅用于迁移
 BRAND = "Knowlib"               # 新数据目录名
 REG_NAME = "Knowlib"            # 开机自启的注册表项名
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"
 
 DATA_FILES = ("config.json", "bank.db", "history.jsonl")
 
@@ -20,17 +20,44 @@ PROVIDERS = {
     "DeepSeek 官方": {
         "base_url": "https://api.deepseek.com/v1",
         "model": "deepseek-chat",
-        "key_hint": "sk- 开头，platform.deepseek.com 获取",
+        "vision": "",
+        "key_hint": "sk- 开头，platform.deepseek.com；⚠ 只有文本模型，不能发图片",
+    },
+    "阿里百炼（通义千问）": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-plus",
+        "vision": "qwen-vl-max",
+        "key_hint": "bailian.console.aliyun.com 获取 sk- Key（支持图片）",
+    },
+    "智谱 GLM": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4-plus",
+        "vision": "glm-4v-plus",
+        "key_hint": "bigmodel.cn 获取（glm-4v 支持图片）",
+    },
+    "月之暗面 Kimi": {
+        "base_url": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-32k",
+        "vision": "moonshot-v1-8k-vision-preview",
+        "key_hint": "platform.moonshot.cn 获取（vision 版支持图片）",
+    },
+    "硅基流动 SiliconFlow": {
+        "base_url": "https://api.siliconflow.cn/v1",
+        "model": "deepseek-ai/DeepSeek-V3",
+        "vision": "Qwen/Qwen2.5-VL-72B-Instruct",
+        "key_hint": "cloud.siliconflow.cn 获取，送免费额度（支持图片）",
     },
     "OpenAI 兼容（中转/其他）": {
         "base_url": "",
         "model": "",
+        "vision": "",
         "key_hint": "填中转站的 Key，端点一般以 /v1 结尾",
     },
     "Ollama 本地（免费）": {
         "base_url": "http://127.0.0.1:11434/v1",
         "model": "qwen2.5vl:7b",
-        "key_hint": "本地模型不需要真 Key，随便填 ollama",
+        "vision": "qwen2.5vl:7b",
+        "key_hint": "本地模型不需要真 Key，随便填 ollama（qwen2.5vl 支持图片）",
     },
 }
 
@@ -316,6 +343,7 @@ def set_autostart(on):
         return True, "ok"
     except Exception as e:
         return False, str(e)
+
 
 
 

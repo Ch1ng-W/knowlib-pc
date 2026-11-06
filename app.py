@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
 )
 
 import config_store
+import md_render
 import question_bank as qbank
 import updater
 
@@ -265,16 +266,52 @@ class AnswerOverlay(QWidget):
         self.apply_settings()
 
     # ---------------- 外观设置
+    def _cfg(self):
+        base = dict(getattr(self.host, "cfg", {}) or {})
+        base.update(getattr(self, "_override", None) or {})
+        return base
+
     def _apply_opacity(self):
-        cfg = getattr(self.host, "cfg", {}) or {}
+        cfg = self._cfg()
         try:
             op = int(cfg.get("overlay_opacity", 96)) / 100.0
         except Exception:
             op = 0.96
         self.setWindowOpacity(max(0.25, min(1.0, op)))
 
+    def preview(self, opts, text=None):
+        """设置页拖动时实时预览外观（不改真实 cfg）。"""
+        self._was_visible = self.isVisible()
+        self._override = dict(opts or {})
+        self.apply_settings()
+        if text is not None:
+            self.title.setText("答案 · 预览")
+            self.set_text(text)
+        scr = QApplication.primaryScreen().availableGeometry()
+        self.adjustSize()
+        self.move(scr.center().x() - self.width() // 2, scr.top() + 90)
+        self.show()
+        self.raise_()
+        t = getattr(self, "_pv_hide", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(self._end_preview)
+            self._pv_hide = t
+        t.start(3200)
+
+    def _end_preview(self):
+        self._override = {}
+        try:
+            self.title.setText("答案")
+        except Exception:
+            pass
+        if not getattr(self, "_was_visible", False):
+            self.hide()
+            self.set_text("")
+
     def apply_settings(self):
-        cfg = getattr(self.host, "cfg", {}) or {}
+        cfg = self._cfg()
         self._width = int(cfg.get("overlay_width", 560))
         self._font = int(cfg.get("overlay_font", 14))
         self.setFixedWidth(self._width)
@@ -338,6 +375,7 @@ class AnswerOverlay(QWidget):
         else:
             big = ans
 
+        big = (big or "").replace("**", "").replace("__", "").strip()
         self.answer.setText(big or "…")
         self.answer.show()
 
@@ -354,8 +392,7 @@ class AnswerOverlay(QWidget):
                     f"padding:2px 0'>{k}．{_html.escape(txt)}{mark}</div>")
             parts.append("<div style='margin-bottom:10px'>" + "".join(rows) + "</div>")
         if tail:
-            parts.append("<div style='color:#c9d1d9;white-space:pre-wrap'>"
-                         + _html.escape(tail) + "</div>")
+            parts.append(md_render.to_html(tail))
         self.body.setHtml("".join(parts) if parts else "")
         self.part_label.setVisible(bool(tail))
         self.body.verticalScrollBar().setValue(0)
@@ -635,7 +672,15 @@ class SettingsPage(QWidget):
         self.provider.addItems(list(config_store.PROVIDERS.keys()))
         if self.cfg.get("provider") in config_store.PROVIDERS:
             self.provider.setCurrentText(self.cfg["provider"])
+        self.provider.activated[str].connect(self._apply_provider)
         c.addLayout(self._labeled("服务商", self.provider))
+
+        self.hint = QLabel("")
+        self.hint.setWordWrap(True)
+        self.hint.setStyleSheet("color:#7f8896;font-size:11px;")
+        self.hint.setText(
+            (config_store.PROVIDERS.get(self.provider.currentText()) or {}).get("key_hint", ""))
+        c.addWidget(self.hint)
 
         self.base_url = QLineEdit(self.cfg.get("base_url", ""))
         self.base_url.setPlaceholderText("https://api.deepseek.com/v1")
@@ -724,6 +769,18 @@ class SettingsPage(QWidget):
         row.addWidget(widget, 1)
         return row
 
+    def _apply_provider(self, name):
+        """选服务商时自动填端点 / 模型 / 视觉模型，并给 Key 提示。"""
+        p = config_store.PROVIDERS.get(name)
+        if not p:
+            return
+        if p.get("base_url"):
+            self.base_url.setText(p["base_url"])
+        if p.get("model"):
+            self.model.setText(p["model"])
+        self.vision_model.setText(p.get("vision", "") or "")
+        self.hint.setText(p.get("key_hint", ""))
+
     # ---------------- 答案窗
     def _build_overlay(self):
         w = QWidget()
@@ -747,9 +804,40 @@ class SettingsPage(QWidget):
                                      int(self.cfg.get("overlay_width", 560)), 420, 1000, " px")
         self.sl_font = self._slider(c, "字号",
                                     int(self.cfg.get("overlay_font", 14)), 12, 22, " px")
+        for sl in (self.sl_opacity, self.sl_width, self.sl_font):
+            sl.valueChanged.connect(self._fire_preview)
+        prow = QHBoxLayout()
+        self.btn_preview = QPushButton("👁 预览答案窗")
+        self.btn_preview.setCursor(Qt.PointingHandCursor)
+        self.btn_preview.clicked.connect(self._fire_preview)
+        prow.addWidget(self.btn_preview)
+        self.preview_hint = QLabel("拖滑块就能实时看到变化")
+        self.preview_hint.setStyleSheet("color:#7f8896;font-size:11px;")
+        prow.addWidget(self.preview_hint, 1)
+        c.addLayout(prow)
         v.addWidget(card)
         v.addStretch(1)
         return w
+
+    def _fire_preview(self, *_a):
+        """滑块一变就通知主窗预览（60ms 防抖）。"""
+        cb = getattr(self, "on_preview", None)
+        if cb is None:
+            return
+        if not hasattr(self, "_pv_timer"):
+            self._pv_timer = QTimer(self)
+            self._pv_timer.setSingleShot(True)
+            self._pv_timer.setInterval(60)
+            self._pv_timer.timeout.connect(self._do_preview)
+        self._pv_timer.start()
+
+    def _do_preview(self):
+        cb = getattr(self, "on_preview", None)
+        if cb is None:
+            return
+        cb({"overlay_opacity": self.sl_opacity.value(),
+            "overlay_width": self.sl_width.value(),
+            "overlay_font": self.sl_font.value()})
 
     def _slider(self, parent_layout, label, value, lo, hi, suffix):
         row = QHBoxLayout()
@@ -899,7 +987,10 @@ class SettingsPage(QWidget):
 
 
 class HistoryPage(QWidget):
-    """浏览 history.jsonl：左边列表，右边题目 + 答案（内嵌在主窗口里）。"""
+    """历史记录：左列表（可折叠 / 可勾选），右侧 Markdown + 公式渲染。"""
+
+    LIST_W = 250
+    FOLD_W = 54
 
     def __init__(self, parent=None, on_back=None):
         super().__init__(parent)
@@ -908,13 +999,25 @@ class HistoryPage(QWidget):
         self.setStyleSheet("")
 
         self.items = []
+        self.sel = set()          # 已勾选的 key
+        self._collapsed = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(12)
+        lay.setSpacing(10)
+
+        head = QHBoxLayout()
         t = QLabel("历史记录")
         t.setObjectName("pageTitle")
-        lay.addWidget(t)
+        head.addWidget(t)
+        head.addStretch(1)
+        self.btn_fold = QPushButton("◀ 收起")
+        self.btn_fold.setFixedHeight(28)
+        self.btn_fold.setCursor(Qt.PointingHandCursor)
+        self.btn_fold.setToolTip("折叠左侧列表，只留题号，右侧看题更宽")
+        self.btn_fold.clicked.connect(self.toggle_fold)
+        head.addWidget(self.btn_fold)
+        lay.addLayout(head)
 
         top = QHBoxLayout()
         self.search = QLineEdit()
@@ -932,48 +1035,92 @@ class HistoryPage(QWidget):
         lay.addLayout(top)
 
         body = QHBoxLayout()
+        body.setSpacing(12)
         self.list = QListWidget()
-        self.list.setFixedWidth(250)
+        self.list.setFixedWidth(self.LIST_W)
+        self.list.setSelectionMode(QListWidget.SingleSelection)
         self.list.currentRowChanged.connect(self.show_item)
+        self.list.itemChanged.connect(self._on_item_changed)
         body.addWidget(self.list)
 
         right = QVBoxLayout()
+        right.setSpacing(8)
         self.view = QTextBrowser()
+        self.view.setOpenExternalLinks(True)
         right.addWidget(self.view, 1)
-        tools = QHBoxLayout()
-        self.btn_copy = QPushButton("复制这条")
-        self.btn_copy.clicked.connect(self.copy_current)
-        self.btn_add = QPushButton("加入题库")
-        self.btn_add.clicked.connect(self.add_to_bank)
-        self.btn_add_all = QPushButton("有效项全部入库")
-        self.btn_add_all.clicked.connect(self.add_all_to_bank)
-        self.btn_clean = QPushButton("清理无效")
-        self.btn_clean.clicked.connect(self.clean_invalid)
-        self.btn_del = QPushButton("清空全部")
-        self.btn_del.clicked.connect(self.clear_all)
-        self.btn_close = QPushButton("← 返回")
-        self.btn_close.clicked.connect(self._go_back)
+
+        # 工具栏放进横向滚动区：窗口再窄也不会把按钮文字压扁
+        bar = QScrollArea()
+        bar.setWidgetResizable(True)
+        bar.setFixedHeight(46)
+        bar.setFrameShape(QFrame.NoFrame)
+        bar.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        bar.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        bar.setStyleSheet("QScrollArea{background:transparent;}"
+                          "QScrollBar:horizontal{height:6px;background:transparent;}"
+                          "QScrollBar::handle:horizontal{background:#30363d;border-radius:3px;}"
+                          "QScrollBar::add-line,QScrollBar::sub-line{width:0;}")
+        holder = QWidget()
+        tools = QHBoxLayout(holder)
+        tools.setContentsMargins(0, 0, 0, 6)
+        tools.setSpacing(8)
+
+        self.btn_add = self._mkbtn("加入题库（选中 0）", self.add_selected)
+        self.btn_add_all = self._mkbtn("有效项全部入库", self.add_all_to_bank)
+        self.btn_clean = self._mkbtn("清理无效", self.clean_invalid)
+        self.btn_del = self._mkbtn("清空全部", self.clear_all)
+        self.btn_close = self._mkbtn("← 返回", self._go_back)
         self.btn_close.setVisible(False)
-        tools.addWidget(self.btn_copy)
-        tools.addWidget(self.btn_add)
-        tools.addWidget(self.btn_add_all)
-        tools.addWidget(self.btn_clean)
-        tools.addWidget(self.btn_del)
+        for b in (self.btn_add, self.btn_add_all, self.btn_clean,
+                  self.btn_del, self.btn_close):
+            b.setFixedHeight(30)
+            tools.addWidget(b)
         tools.addStretch(1)
-        tools.addWidget(self.btn_close)
-        right.addLayout(tools)
+        bar.setWidget(holder)
+        right.addWidget(bar)
+
         body.addLayout(right, 1)
         lay.addLayout(body, 1)
 
         self.reload()
 
-    # --
+    # ------------- 小工具
+    def _mkbtn(self, text, slot):
+        b = QPushButton(text)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        b.setMinimumWidth(self.fontMetrics().horizontalAdvance(text) + 26)
+        b.clicked.connect(slot)
+        return b
+
+    def toggle_fold(self):
+        self._collapsed = not self._collapsed
+        self.list.setFixedWidth(self.FOLD_W if self._collapsed else self.LIST_W)
+        self.btn_fold.setText("▶ 展开" if self._collapsed else "◀ 收起")
+        self._relabel()
+
+    def _relabel(self):
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            data = it.data(Qt.UserRole) or {}
+            if self._collapsed:
+                it.setText(str(i + 1))
+                it.setToolTip((" ".join((data.get("q") or "").split()))[:120])
+            else:
+                q = (data.get("q") or "")
+                it.setText(f"{data.get('t', '')[5:16]}  " +
+                           (" ".join(q.split())[:26] or "（无题目）"))
+
+    @staticmethod
+    def _key(it):
+        return (str(it.get("t", "")) + "|" + (it.get("q") or "")[:60])
+
+    # ------------- 数据
     def reload(self):
         self.items = config_store.load_history(limit=500)
         self.apply_filter()
 
     def _visible_items(self):
-        """按「只看有效」过滤 + 同题（含模糊重复）去重，保留最新。"""
         kw = self.search.text().strip().lower()
         pool = []
         for it in self.items:
@@ -990,78 +1137,113 @@ class HistoryPage(QWidget):
     def apply_filter(self):
         vis, dropped = self._visible_items()
         cur = self.list.currentRow()
+        self.list.blockSignals(True)
         self.list.clear()
         for it in vis:
-            q = (it.get("q") or "")
-            q1 = " ".join(q.split())[:26] or "（无题目）"
-            item = QListWidgetItem(f"{it.get('t', '')[5:16]}  {q1}")
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, it)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.Checked if self._key(it) in self.sel else Qt.Unchecked)
             self.list.addItem(item)
+        self.list.blockSignals(False)
+        self._relabel()
+
         txt = f"共 {len(vis)} 条"
         if dropped:
             txt += f" · 已隐藏 {dropped} 条无效/重复"
         if self.search.text().strip():
             txt += "（已搜索）"
         self.count.setText(txt)
+        self._update_selcount()
         if vis:
             self.list.setCurrentRow(min(max(cur, 0), len(vis) - 1))
         else:
             self.view.setHtml("<div style='color:#7f8896;padding:20px'>"
                               "没有可显示的记录。取消勾选「只看有效」可以看全部。</div>")
 
+    def _on_item_changed(self, item):
+        it = item.data(Qt.UserRole) or {}
+        k = self._key(it)
+        if item.checkState() == Qt.Checked:
+            self.sel.add(k)
+        else:
+            self.sel.discard(k)
+        self._update_selcount()
+
+    def _update_selcount(self):
+        n = len(self.sel)
+        self.btn_add.setText(f"加入题库（选中 {n}）")
+        self.btn_add.setMinimumWidth(
+            self.fontMetrics().horizontalAdvance(self.btn_add.text()) + 26)
+        self.btn_add.setEnabled(n > 0)
+
+    def _checked_items(self):
+        out = []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.checkState() == Qt.Checked:
+                out.append(it.data(Qt.UserRole) or {})
+        return out
+
+    # ------------- 预览
     def show_item(self, row):
         if row < 0 or row >= self.list.count():
             return
         it = self.list.item(row).data(Qt.UserRole) or {}
-        q = (it.get("q") or "").strip()
-        a = (it.get("a") or "").strip()
+        q = md_render.clean_text((it.get("q") or "").strip())
+        a = md_render.clean_text((it.get("a") or "").strip())
         cost = it.get("cost")
         cost_s = f" · {cost}s" if isinstance(cost, (int, float)) else ""
         html = (
-            f"<div style='color:#7f8896;font-size:12px'>{it.get('t','')}{cost_s}</div>"
-            f"<div style='color:#8fb6ff;font-size:12px;margin-top:10px'>题目</div>"
-            f"<div style='white-space:pre-wrap;margin-bottom:14px'>{self._esc(q)}</div>"
-            f"<div style='color:#8fb6ff;font-size:12px'>答案与解析</div>"
-            f"<div style='white-space:pre-wrap'>{self._esc(a)}</div>"
+            f"<div style='color:#7f8896;font-size:12px'>"
+            f"{self._esc(it.get('t', ''))}{cost_s}</div>"
+            f"<div style='color:#8fb6ff;font-size:12px;margin:12px 0 4px'>题目</div>"
+            + md_render.to_html(q)
+            + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>答案与解析</div>"
+            + md_render.to_html(a, color="#d6f5dd")
         )
         self.view.setHtml(html)
+        sb = self.view.verticalScrollBar()
+        sb.setValue(0)
 
     @staticmethod
     def _esc(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    def copy_current(self):
-        row = self.list.currentRow()
-        if row < 0:
-            return
-        it = self.list.item(row).data(Qt.UserRole) or {}
-        QApplication.clipboard().setText(
-            f"题目：\n{it.get('q','')}\n\n{it.get('a','')}".strip())
-        self.count.setText("已复制✓")
-
+    # ------------- 操作
     def clear_all(self):
         if not ask_yes(self, "清空历史", "确定删除所有历史记录？不可恢复。"):
             return
         config_store.clear_history()
+        self.sel.clear()
         self.reload()
 
     def _go_back(self):
         if self._on_back:
             self._on_back()
 
-    def add_to_bank(self):
-        row = self.list.currentRow()
-        if row < 0:
-            self.count.setText("先选一条")
+    def add_selected(self):
+        items = self._checked_items()
+        if not items:
+            self.count.setText("先勾选要入库的题目")
             return
-        it = self.list.item(row).data(Qt.UserRole) or {}
-        q = (it.get("q") or "").strip()
-        a = (it.get("a") or "").strip()
-        if not q or not a:
-            self.count.setText("这条没有答案，存不了")
-            return
-        ok = qbank.save(q, a, source="history")
-        self.count.setText("已加入题库 ✓" if ok else "加入失败（题目太短？）")
+        ok = 0
+        for it in items:
+            q = md_render.clean_text((it.get("q") or "").strip())
+            a = md_render.clean_text((it.get("a") or "").strip())
+            if q and a and qbank.save(q, a, source="history"):
+                ok += 1
+        self.count.setText(f"已入库 {ok} / {len(items)} 条 ✓")
+        self.sel.clear()
+        self.apply_filter() if False else self._refresh_checks()
+
+    def _refresh_checks(self):
+        self.list.blockSignals(True)
+        for i in range(self.list.count()):
+            self.list.item(i).setCheckState(Qt.Unchecked)
+        self.list.blockSignals(False)
+        self._update_selcount()
 
     def add_all_to_bank(self):
         vis, _ = self._visible_items()
@@ -1072,8 +1254,8 @@ class HistoryPage(QWidget):
             return
         ok = 0
         for it in vis:
-            q = (it.get("q") or "").strip()
-            a = (it.get("a") or "").strip()
+            q = md_render.clean_text((it.get("q") or "").strip())
+            a = md_render.clean_text((it.get("a") or "").strip())
             if q and a and qbank.save(q, a, source="history"):
                 ok += 1
         self.count.setText(f"已入库 {ok} 条 ✓")
@@ -1084,6 +1266,7 @@ class HistoryPage(QWidget):
                        "会自动备份一份 history.jsonl.bak。"):
             return
         r = config_store.clean_history(keep_valid=True, dedupe=True)
+        self.sel.clear()
         self.reload()
         self.count.setText(f"清理完成：{r['before']} → {r['after']} 条")
 
@@ -1159,8 +1342,8 @@ class BankPage(QWidget):
         right.addLayout(tools1b)
 
         tools2 = QHBoxLayout()
-        self.btn_import = QPushButton("导入 CSV")
-        self.btn_import.clicked.connect(self.import_csv)
+        self.btn_import = QPushButton("导入题库（CSV/MD/TXT/JSON）")
+        self.btn_import.clicked.connect(self.import_file)
         self.btn_export = QPushButton("导出 CSV")
         self.btn_export.clicked.connect(self.export_csv)
         self.btn_clear = QPushButton("清空题库")
@@ -1218,18 +1401,24 @@ class BankPage(QWidget):
         if row < 0 or row >= self.list.count():
             return
         it = self.list.item(row).data(Qt.UserRole) or {}
-        esc = HistoryPage._esc
+        qtype = it.get("qtype") or ""
+        head = (f"<div style='color:#7f8896;font-size:12px'>存于 {it.get('created','')}"
+                f" · 命中 {it.get('hits',0)} 次"
+                + (f" · {HistoryPage._esc(qtype)}" if qtype else "")
+                + "</div>")
+        ans = (it.get("answer") or "").strip()
+        sol = (it.get("solution") or "").strip()
         html = (
-            f"<div style='color:#7f8896;font-size:12px'>存于 {it.get('created','')}"
-            f" · 命中 {it.get('hits',0)} 次</div>"
-            f"<div style='color:#8fb6ff;font-size:12px;margin-top:10px'>题目</div>"
-            f"<div style='white-space:pre-wrap;margin-bottom:14px'>{esc(it.get('q_text',''))}</div>"
-            f"<div style='color:#8fb6ff;font-size:12px'>答案</div>"
-            f"<div style='white-space:pre-wrap;color:#7ee787;font-size:16px;"
-            f"margin-bottom:10px'>{esc(it.get('answer',''))}</div>"
-            f"<div style='white-space:pre-wrap;color:#c9d1d9'>{esc(it.get('solution',''))}</div>"
+            head
+            + "<div style='color:#8fb6ff;font-size:12px;margin:12px 0 4px'>题目</div>"
+            + md_render.to_html(md_render.clean_text(it.get("q_text", "")))
+            + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>答案</div>"
+            + md_render.to_html(ans or "（无）", color="#7ee787")
+            + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>解析</div>"
+            + md_render.to_html(sol or "（无）")
         )
         self.view.setHtml(html)
+        self.view.verticalScrollBar().setValue(0)
 
     def copy_current(self):
         row = self.list.currentRow()
@@ -1256,14 +1445,18 @@ class BankPage(QWidget):
         ok, n = qbank.export_csv(p)
         self.stat.setText(f"已导出 {n} 题 ✓" if ok else f"导出失败：{n}")
 
-    def import_csv(self):
+    def import_file(self):
         from PyQt5.QtWidgets import QFileDialog
-        p, _ = QFileDialog.getOpenFileName(self, "导入题库", "", "CSV (*.csv)")
+        p, _ = QFileDialog.getOpenFileName(
+            self, "导入题库", "",
+            "题库文件 (*.csv *.md *.markdown *.txt *.json);;"
+            "CSV (*.csv);;Markdown (*.md *.markdown);;文本 (*.txt);;JSON (*.json)")
         if not p:
             return
-        ok, n = qbank.import_csv(p)
+        ok, n = qbank.import_any(p)
         self.stat.setText(f"已导入 {n} 题 ✓" if ok else f"导入失败：{n}")
-        self.reload()
+        if ok:
+            self.reload()
 
     # -------- 导出（MD / PDF）
     @staticmethod
@@ -2029,6 +2222,7 @@ class MainWindow(QWidget):
         self.page_bank = BankPage(self, on_back=lambda: self.show_page("home"))
         self.page_settings = SettingsPage(self.cfg, self, on_saved=self._on_settings_saved,
                                           on_back=lambda: self.show_page("home"))
+        self.page_settings.on_preview = self._preview_overlay
         self.page_settings_scroll = QScrollArea()
         self.page_settings_scroll.setObjectName("pageScroll")
         self.page_settings_scroll.setWidgetResizable(True)
@@ -2195,7 +2389,22 @@ class MainWindow(QWidget):
         self._about_t = t
         t.start()
 
+    def _preview_overlay(self, opts):
+        """设置页拖滑块 → 答案窗实时预览。"""
+        demo = ("答案：**A**\n"
+                "解析：由 $I_a=\\frac{U}{R_a}$ 得 $I_a=\\frac{220}{0.5}=440A$，故选 A。\n"
+                "（预览效果，松开滑块 3 秒后自动收起）")
+        try:
+            self.overlay.preview(opts, demo)
+        except Exception as e:
+            print("preview failed:", e)
+
     def _on_settings_saved(self, c):
+        try:
+            self.overlay._override = {}
+            self.overlay.title.setText("答案")
+        except Exception:
+            pass
         self.cfg = config_store.load()
         self.add_log("设置已保存")
         self.setup_hotkeys()
