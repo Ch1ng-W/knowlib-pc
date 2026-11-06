@@ -21,7 +21,7 @@ from PyQt5.QtCore import QUrl
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QDialog, QLineEdit, QComboBox, QFormLayout, QMessageBox,
-    QTextBrowser, QCheckBox, QSpinBox, QSizePolicy, QFrame, QMenu, QAction,
+    QTextBrowser, QCheckBox, QSpinBox, QSizePolicy, QFrame, QMenu, QAction, QGridLayout,
     QListWidget, QListWidgetItem, QSystemTrayIcon, QStyle, QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect, QStackedWidget, QScrollArea, QSlider,
 )
@@ -1626,12 +1626,12 @@ class BankPage(QWidget):
         right = QVBoxLayout()
         self.view = QTextBrowser()
         right.addWidget(self.view, 1)
-        tools1 = QHBoxLayout()
+        # ---- 按钮（先统一建好，再用网格摆，避免窗口变窄时被挤成一条）
         self.btn_copy = QPushButton("复制答案")
         self.btn_copy.clicked.connect(self.copy_current)
         self.btn_edit = QPushButton("编辑这条")
         self.btn_edit.clicked.connect(self.edit_current)
-        self.btn_new = QPushButton("＋ 新建题目")
+        self.btn_new = QPushButton("＋ 新建")
         self.btn_new.clicked.connect(self.new_question)
         self.btn_del = QPushButton("删除这条")
         self.btn_del.clicked.connect(self.delete_current)
@@ -1639,18 +1639,6 @@ class BankPage(QWidget):
         self.btn_all.clicked.connect(lambda: self.check_all(True))
         self.btn_none = QPushButton("全不选")
         self.btn_none.clicked.connect(lambda: self.check_all(False))
-        tools1.addWidget(self.btn_copy)
-        tools1.addWidget(self.btn_edit)
-        tools1.addWidget(self.btn_new)
-        tools1.addWidget(self.btn_del)
-        tools1.addWidget(self.btn_all)
-        tools1.addWidget(self.btn_none)
-        tools1.addStretch(1)
-        right.addLayout(tools1)
-
-        tools1b = QHBoxLayout()
-        self.chk_answer = QCheckBox("导出含答案与解析")
-        self.chk_answer.setStyleSheet("QCheckBox{color:#98a2b3;}")
         self.btn_md = QPushButton("导出 MD")
         self.btn_md.clicked.connect(self.export_md)
         self.btn_pdf = QPushButton("导出 PDF")
@@ -1658,14 +1646,8 @@ class BankPage(QWidget):
         self.btn_pdf.setStyleSheet(
             "QPushButton{background:#2f6feb;color:#ffffff;border:none;border-radius:8px;"
             "padding:7px 14px;}QPushButton:hover{background:#3f7ffb;}")
-        tools1b.addWidget(self.chk_answer)
-        tools1b.addStretch(1)
-        tools1b.addWidget(self.btn_md)
-        tools1b.addWidget(self.btn_pdf)
-        right.addLayout(tools1b)
-
-        tools2 = QHBoxLayout()
-        self.btn_import = QPushButton("导入题库（CSV/MD/TXT/JSON）")
+        self.btn_import = QPushButton("导入题库")
+        self.btn_import.setToolTip("支持 CSV / Markdown / TXT / JSON")
         self.btn_import.clicked.connect(self.import_file)
         self.btn_export = QPushButton("导出 CSV")
         self.btn_export.clicked.connect(self.export_csv)
@@ -1674,12 +1656,29 @@ class BankPage(QWidget):
         self.btn_close = QPushButton("← 返回")
         self.btn_close.clicked.connect(self._go_back)
         self.btn_close.setVisible(False)
-        tools2.addWidget(self.btn_import)
-        tools2.addWidget(self.btn_export)
-        tools2.addWidget(self.btn_clear)
-        tools2.addStretch(1)
-        tools2.addWidget(self.btn_close)
-        right.addLayout(tools2)
+
+        self.chk_answer = QCheckBox("导出含答案与解析")
+        self.chk_answer.setStyleSheet("QCheckBox{color:#98a2b3;}")
+
+        tools = QGridLayout()
+        tools.setHorizontalSpacing(8)
+        tools.setVerticalSpacing(8)
+        cells = [
+            (self.btn_edit, 0, 0), (self.btn_new, 0, 1),
+            (self.btn_del, 0, 2), (self.btn_copy, 0, 3),
+            (self.btn_all, 1, 0), (self.btn_none, 1, 1),
+            (self.btn_md, 2, 0), (self.btn_pdf, 2, 1),
+            (self.btn_export, 2, 2), (self.btn_import, 2, 3),
+            (self.btn_clear, 3, 0), (self.btn_close, 3, 3),
+        ]
+        for b, r, col in cells:
+            b.setCursor(Qt.PointingHandCursor)
+            b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + 30)
+            tools.addWidget(b, r, col)
+        tools.addWidget(self.chk_answer, 1, 2, 1, 2)
+        tools.setColumnStretch(4, 1)
+        right.addLayout(tools)
         body.addLayout(right, 1)
         lay.addLayout(body, 1)
 
