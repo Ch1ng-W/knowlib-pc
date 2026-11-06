@@ -937,12 +937,21 @@ class TitleBar(QWidget):
         lay.setContentsMargins(16, 0, 10, 0)
         lay.setSpacing(8)
 
-        logo = QLabel("K")
-        logo.setFixedSize(24, 24)
+        logo = QLabel()
+        logo.setFixedSize(26, 26)
         logo.setAlignment(Qt.AlignCenter)
-        logo.setStyleSheet(
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5b9dff,stop:1 #7b61ff);"
-            "border-radius:8px;color:#ffffff;font-weight:800;font-size:13px;")
+        logo_path = os.path.join(
+            os.path.dirname(os.path.abspath(sys.argv[0] if getattr(sys, "frozen", False) else __file__)),
+            "logo.png")
+        pm = QPixmap(logo_path)
+        if pm.isNull():
+            logo.setText("K")
+            logo.setStyleSheet(
+                "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #5b9dff,stop:1 #7b61ff);"
+                "border-radius:8px;color:#ffffff;font-weight:800;font-size:13px;")
+        else:
+            logo.setPixmap(pm.scaled(26, 26, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logo.setStyleSheet("background:transparent;")
         lay.addWidget(logo)
 
         name = QLabel(APP_TITLE)
