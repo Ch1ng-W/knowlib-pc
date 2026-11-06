@@ -72,6 +72,71 @@ class AiClient:
         except Exception as e:
             return False, f"{type(e).__name__}: {e}", time.time() - t0
 
+
+    def solve_image(self, pil_image, on_delta=None, on_state=None):
+        """直接把截图喂给视觉模型（公式/图表 OCR 乱了时用）。"""
+        import base64
+        import io as _io
+        cfg = self.cfg
+        img = pil_image.convert("RGB")
+        w, h = img.size
+        scale = min(1.0, 1600.0 / max(w, h))
+        if scale < 1.0:
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=88)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        data_url = "data:image/jpeg;base64," + b64
+
+        prompt = (cfg.get("prompt") or "").strip()
+        t0 = time.time()
+        try:
+            c = self._client()
+            kw = dict(
+                model=cfg.get("vision_model") or cfg.get("model"),
+                messages=[
+                    {"role": "system", "content": "你是严谨的解题助手。直接看图片里的题目作答。"},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ]},
+                ],
+                temperature=float(cfg.get("temperature", 0.2)),
+                max_tokens=int(cfg.get("max_tokens", 900)),
+                stream=True,
+            )
+            try:
+                stream = c.chat.completions.create(
+                    stream_options={"include_usage": True}, **kw)
+            except Exception:
+                stream = c.chat.completions.create(**kw)
+            self.last_usage = {}
+            buf2 = []
+            for chunk in stream:
+                try:
+                    u = getattr(chunk, "usage", None)
+                    if u is not None:
+                        self.last_usage = {
+                            "in": int(getattr(u, "prompt_tokens", 0) or 0),
+                            "out": int(getattr(u, "completion_tokens", 0) or 0),
+                            "total": int(getattr(u, "total_tokens", 0) or 0),
+                        }
+                except Exception:
+                    pass
+                try:
+                    delta = chunk.choices[0].delta.content or ""
+                except Exception:
+                    delta = ""
+                if delta:
+                    buf2.append(delta)
+                    if on_delta:
+                        on_delta(delta)
+            return "".join(buf2).strip(), time.time() - t0
+        except Exception as e:
+            if on_state:
+                on_state(f"图片作答失败：{type(e).__name__}: {e}")
+            raise
+
     def solve(self, question_text: str,
               on_delta: Optional[Callable[[str], None]] = None,
               on_state: Optional[Callable[[str], None]] = None):

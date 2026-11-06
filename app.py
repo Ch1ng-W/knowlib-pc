@@ -662,6 +662,18 @@ class SettingsPage(QWidget):
         self.model.setPlaceholderText("deepseek-chat")
         c.addLayout(self._labeled("模型", self.model))
 
+        self.vision_model = QLineEdit(self.cfg.get("vision_model", ""))
+        self.vision_model.setPlaceholderText("留空 = 不用；例：qwen-vl-max / gpt-4o-mini")
+        c.addLayout(self._labeled("视觉模型", self.vision_model))
+
+        self.vision_mode = WinCombo()
+        self.vision_mode.addItem("自动（OCR 乱了才用图片）", "auto")
+        self.vision_mode.addItem("总是用图片作答", "always")
+        self.vision_mode.addItem("关闭", "off")
+        vi = self.vision_mode.findData(self.cfg.get("vision_mode", "auto"))
+        self.vision_mode.setCurrentIndex(vi if vi >= 0 else 0)
+        c.addLayout(self._labeled("图片作答", self.vision_mode))
+
         self.interval = QSpinBox()
         self.interval.setRange(500, 5000)
         self.interval.setSingleStep(100)
@@ -838,6 +850,8 @@ class SettingsPage(QWidget):
         c["overlay_width"] = self.sl_width.value()
         c["overlay_font"] = self.sl_font.value()
         c["auto_save_bank"] = self.auto_bank.isChecked()
+        c["vision_model"] = self.vision_model.text().strip()
+        c["vision_mode"] = self.vision_mode.currentData() or "auto"
         return c
 
     def do_test(self):
@@ -1338,6 +1352,22 @@ class ScanWorker(QObject):
     def request_once(self):
         self.force_once = True
 
+    @staticmethod
+    def _ocr_poor(text, conf):
+        """OCR 是否已经乱到不能用了（公式/图题典型表现）。"""
+        t = (text or "").strip()
+        if len(t) < 12:
+            return True
+        cjk = sum(1 for ch in t if "\u4e00" <= ch <= "\u9fff")
+        if cjk / max(1, len(t)) < 0.42:
+            return True
+        if conf and conf < 0.78:
+            return True
+        for bad in ("\u25a1", "\u53e3\u53e3"):
+            if bad in t:
+                return True
+        return False
+
     def loop(self):
         import mss
         from PIL import Image
@@ -1415,10 +1445,32 @@ class ScanWorker(QObject):
                         continue
                 self.bank_used = False
 
-                self.state.emit("请求 AI…", COLOR_ACCENT)
+                mode = str(self.cfg.get("vision_mode", "auto"))
+                vmodel = (self.cfg.get("vision_model") or "").strip()
+                use_vision = False
+                if vmodel and mode == "always":
+                    use_vision = True
+                elif vmodel and mode == "auto" and self._ocr_poor(text, conf):
+                    use_vision = True
 
                 client = ocr_ai.AiClient(self.cfg)
-                full, ai_cost = client.solve(text, on_delta=lambda d: self.delta.emit(d))
+                if use_vision:
+                    self.state.emit("看图作答…", COLOR_ACCENT)
+                    self.detail.emit("OCR 不可靠 → 直接把截图交给视觉模型")
+                    try:
+                        full, ai_cost = client.solve_image(
+                            img, on_delta=lambda d: self.delta.emit(d))
+                    except Exception as e:
+                        use_vision = False
+                        self.detail.emit(
+                            f"图片作答失败（{type(e).__name__}），退回文字作答")
+                        self.state.emit("请求 AI…", COLOR_ACCENT)
+                        full, ai_cost = client.solve(
+                            text, on_delta=lambda d: self.delta.emit(d))
+                else:
+                    self.state.emit("请求 AI…", COLOR_ACCENT)
+                    full, ai_cost = client.solve(text, on_delta=lambda d: self.delta.emit(d))
+                self.used_vision = use_vision
                 self.last_usage = dict(getattr(client, "last_usage", {}) or {})
                 if self.last_usage.get("total"):
                     self.detail.emit(
@@ -2502,11 +2554,13 @@ class MainWindow(QWidget):
             self.overlay.foot.setText(f"本地题库命中 · 相似度 {score:.2f} · 0 token（可点「纠错」改答案）")
         else:
             usage = getattr(self.worker, "last_usage", None) if self.worker else None
+            src = "图片作答" if getattr(self.worker, "used_vision", False) else "AI"
             if usage and usage.get("total"):
                 self.overlay.foot.setText(
-                    f"AI {cost:.2f}s · 输入 {usage.get('in', 0)} / 输出 {usage.get('out', 0)} tokens")
+                    f"{src} {cost:.2f}s · 输入 {usage.get('in', 0)}"
+                    f" / 输出 {usage.get('out', 0)} tokens")
             else:
-                self.overlay.foot.setText(f"AI {cost:.2f}s · 可拖动 / 可纠错")
+                self.overlay.foot.setText(f"{src} {cost:.2f}s · 可拖动 / 可纠错")
         self.overlay.raise_()
 
         # 存本地题库（题库命中的不重复存）

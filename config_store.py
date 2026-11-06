@@ -12,7 +12,7 @@ import sys
 APP_NAME = "XiaoTuanSouTi"      # 旧目录名，仅用于迁移
 BRAND = "Knowlib"               # 新数据目录名
 REG_NAME = "Knowlib"            # 开机自启的注册表项名
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 
 DATA_FILES = ("config.json", "bank.db", "history.jsonl")
 
@@ -53,6 +53,8 @@ DEFAULTS = {
     "overlay_width": 560,
     "overlay_font": 14,
     "auto_save_bank": True,
+    "vision_model": "",
+    "vision_mode": "auto",
     "region": {"left": 100, "top": 100, "width": 900, "height": 420},
     "prompt": (
         "你是解题助手。下面是一道题的截图文字识别结果。请：\n"
@@ -314,6 +316,7 @@ def set_autostart(on):
         return True, "ok"
     except Exception as e:
         return False, str(e)
+
 
 
 
