@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QDialog, QLineEdit, QComboBox, QFormLayout, QMessageBox,
     QTextBrowser, QCheckBox, QSpinBox, QSizePolicy, QFrame, QMenu, QAction,
     QListWidget, QListWidgetItem, QSystemTrayIcon, QStyle, QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect, QStackedWidget, QScrollArea,
+    QGraphicsOpacityEffect, QStackedWidget, QScrollArea, QSlider,
 )
 
 import config_store
@@ -190,9 +190,13 @@ class AnswerOverlay(QWidget):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.host = host
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedWidth(560)
         self._drag = None
         self._full = ""
+        cfg = getattr(host, "cfg", {}) or {}
+        self._width = int(cfg.get("overlay_width", 560))
+        self._font = int(cfg.get("overlay_font", 14))
+        self.setFixedWidth(self._width)
+        self._apply_opacity()
 
         root = QFrame(self)
         root.setObjectName("card")
@@ -204,6 +208,8 @@ class AnswerOverlay(QWidget):
             "QPushButton{color:#dfe3ea;background:rgba(255,255,255,18);border:none;"
             "border-radius:8px;padding:5px 10px;}"
             "QPushButton:hover{background:rgba(255,255,255,34);}"
+            "QPlainTextEdit{background:rgba(0,0,0,90);color:#e8eaed;"
+            "border:1px solid rgba(255,255,255,30);border-radius:8px;padding:8px;}"
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -215,14 +221,16 @@ class AnswerOverlay(QWidget):
         head = QHBoxLayout()
         self.title = QLabel("答案")
         self.title.setStyleSheet("font-size:13px;color:#9aa4b2;")
+        self.btn_fix = QPushButton("纠错")
         self.btn_copy = QPushButton("复制")
         self.btn_retry = QPushButton("重问")
         self.btn_close = QPushButton("×")
         self.btn_close.setFixedWidth(30)
-        for b in (self.btn_copy, self.btn_retry, self.btn_close):
+        for b in (self.btn_fix, self.btn_copy, self.btn_retry, self.btn_close):
             b.setCursor(Qt.PointingHandCursor)
         head.addWidget(self.title)
         head.addStretch(1)
+        head.addWidget(self.btn_fix)
         head.addWidget(self.btn_copy)
         head.addWidget(self.btn_retry)
         head.addWidget(self.btn_close)
@@ -232,12 +240,6 @@ class AnswerOverlay(QWidget):
         self.answer = QLabel("")
         self.answer.setWordWrap(True)
         self.answer.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.answer.setStyleSheet(
-            "font-size:34px;font-weight:800;color:#7ee787;"
-            "padding:10px 14px;border-radius:12px;"
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            "stop:0 rgba(126,231,135,26),stop:1 rgba(126,231,135,10));"
-        )
         self.answer.setMinimumHeight(56)
         inner.addWidget(self.answer)
 
@@ -247,19 +249,46 @@ class AnswerOverlay(QWidget):
         inner.addWidget(self.part_label)
 
         self.body = QTextBrowser()
-        self.body.setStyleSheet("background:transparent;border:none;color:#d5dae3;font-size:14px;line-height:1.55;")
+        self.body.setStyleSheet("background:transparent;border:none;")
         self.body.setMinimumHeight(90)
-        self.body.setMaximumHeight(360)
+        self.body.setMaximumHeight(380)
         inner.addWidget(self.body)
 
         self.foot = QLabel("")
         self.foot.setStyleSheet("color:#7f8896;font-size:11px;")
         inner.addWidget(self.foot)
 
+        self.btn_fix.clicked.connect(self.do_fix)
         self.btn_copy.clicked.connect(self.copy_text)
         self.btn_retry.clicked.connect(host.ask_again)
         self.btn_close.clicked.connect(self.hide)
+        self.apply_settings()
 
+    # ---------------- 外观设置
+    def _apply_opacity(self):
+        cfg = getattr(self.host, "cfg", {}) or {}
+        try:
+            op = int(cfg.get("overlay_opacity", 96)) / 100.0
+        except Exception:
+            op = 0.96
+        self.setWindowOpacity(max(0.25, min(1.0, op)))
+
+    def apply_settings(self):
+        cfg = getattr(self.host, "cfg", {}) or {}
+        self._width = int(cfg.get("overlay_width", 560))
+        self._font = int(cfg.get("overlay_font", 14))
+        self.setFixedWidth(self._width)
+        self._apply_opacity()
+        self.answer.setStyleSheet(
+            f"font-size:{self._font + 20}px;font-weight:800;color:#7ee787;"
+            "padding:10px 14px;border-radius:12px;"
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 rgba(126,231,135,26),stop:1 rgba(126,231,135,10));")
+        self.body.setStyleSheet(
+            f"background:transparent;border:none;color:#d5dae3;font-size:{self._font}px;")
+        self._render()
+
+    # ---------------- 内容
     def set_text(self, text):
         self._full = text or ""
         self._render()
@@ -270,8 +299,9 @@ class AnswerOverlay(QWidget):
 
     def _render(self):
         import re as _re
-        full = getattr(self, "_full", "")
-        # 拆出「答案」和「解析」
+        import html as _html
+        full = getattr(self, "_full", "") or ""
+
         idx = -1
         for marker in ("解析：", "解析:"):
             i = full.find(marker)
@@ -280,35 +310,95 @@ class AnswerOverlay(QWidget):
                 break
         head = full if idx < 0 else full[:idx]
         tail = "" if idx < 0 else full[idx:]
+        tail = tail.replace("解析：", "").replace("解析:", "").strip()
 
         m = _re.search(r"答\s*案\s*[:：]\s*([\s\S]*)", head)
-        if m:
-            ans = m.group(1).strip()
-        else:
-            ans = head.strip()
-        ans = ans.strip().strip("：:").strip()
+        ans = (m.group(1) if m else head).strip().strip("：:").strip()
 
-        if ans:
-            self.answer.setText(ans)
-            self.answer.show()
-            self.part_label.show()
-        else:
-            self.answer.setText("…")
-            self.part_label.hide()
+        # 从题干里解析选项（A．xxx B．xxx）
+        opts = []
+        try:
+            import paper_export as _pe
+            _, opts = _pe.parse_options(getattr(self.host, "last_question", "") or "")
+        except Exception:
+            opts = []
 
-        tail = tail.replace("解析：", "").replace("解析:", "").strip()
-        self.body.setPlainText(tail)
-        sb = self.body.verticalScrollBar()
-        sb.setValue(0)
+        letter = ""
+        mm = _re.match(r"^\s*([A-Ha-h])\b", ans)
+        if mm:
+            letter = mm.group(1).upper()
+
+        if opts and letter:
+            pick = None
+            for k, txt in opts:
+                if k.upper() == letter:
+                    pick = txt
+                    break
+            big = f"{letter}．{pick}" if pick else letter
+        else:
+            big = ans
+
+        self.answer.setText(big or "…")
+        self.answer.show()
+
+        parts = []
+        if opts:
+            rows = []
+            for k, txt in opts:
+                on = bool(letter) and k.upper() == letter
+                color = "#7ee787" if on else "#9aa4b2"
+                weight = "700" if on else "400"
+                mark = "  ✓" if on else ""
+                rows.append(
+                    f"<div style='color:{color};font-weight:{weight};"
+                    f"padding:2px 0'>{k}．{_html.escape(txt)}{mark}</div>")
+            parts.append("<div style='margin-bottom:10px'>" + "".join(rows) + "</div>")
+        if tail:
+            parts.append("<div style='color:#c9d1d9;white-space:pre-wrap'>"
+                         + _html.escape(tail) + "</div>")
+        self.body.setHtml("".join(parts) if parts else "")
+        self.part_label.setVisible(bool(tail))
+        self.body.verticalScrollBar().setValue(0)
 
     def copy_text(self):
-        # 复制完整内容（答案 + 解析），而不是只有解析
         text = (getattr(self, "_full", "") or "").strip()
         if not text:
             text = (self.answer.text() + "\n" + self.body.toPlainText()).strip()
         QApplication.clipboard().setText(text)
         self.foot.setText("已复制到剪贴板")
 
+    # ---------------- 纠错
+    def do_fix(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("纠错")
+        dlg.resize(600, 400)
+        v = QVBoxLayout(dlg)
+        tip = QLabel("改好答案/解析后点保存：会覆盖本地题库里这道题，下次同一题直接用新答案。")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        ed = QPlainTextEdit(self._full)
+        v.addWidget(ed, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = QPushButton("取消")
+        ok = QPushButton("保存")
+        ok.setDefault(True)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        v.addLayout(row)
+        cancel.clicked.connect(dlg.reject)
+        ok.clicked.connect(dlg.accept)
+        if dlg.exec_() == QDialog.Accepted:
+            txt = ed.toPlainText().strip()
+            if not txt:
+                return
+            self.set_text(txt)
+            try:
+                self.host.apply_correction(txt)
+            except Exception:
+                pass
+
+    # ---------------- 拖动 / 定位
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
             self._drag = e.globalPos() - self.frameGeometry().topLeft()
@@ -337,7 +427,6 @@ class AnswerOverlay(QWidget):
         rx, ry = int(region.get("left", 0)), int(region.get("top", 0))
         rw, rh = int(region.get("width", 0)), int(region.get("height", 0))
 
-        # 用户拖动过：优先回到他放的位置（只要不压住监控区域）
         saved = (self.host.cfg.get("overlay_pos") or []) if hasattr(self, "host") else []
         if len(saved) == 2:
             x, y = int(saved[0]), int(saved[1])
@@ -351,10 +440,10 @@ class AnswerOverlay(QWidget):
         cands = []
         if rw and rh:
             cands += [
-                (rx + rw + m, ry),                     # 右侧
-                (rx - w - m, ry),                      # 左侧
-                (rx, ry + rh + m),                     # 下方
-                (rx, ry - h - m),                      # 上方
+                (rx + rw + m, ry),
+                (rx - w - m, ry),
+                (rx, ry + rh + m),
+                (rx, ry - h - m),
             ]
         cands += [(scr.right() - w - 20, scr.top() + 80)]
 
@@ -364,7 +453,6 @@ class AnswerOverlay(QWidget):
                 continue
             if x + w > scr.right() - 8 or y + h > scr.bottom() - 8:
                 continue
-            # 与监控区域有重叠就跳过
             if rw and rh and not (x + w < rx or x > rx + rw or y + h < ry or y > ry + rh):
                 continue
             best = (x, y)
@@ -374,19 +462,7 @@ class AnswerOverlay(QWidget):
             best = (scr.right() - w - 20, scr.top() + 80)
         self.move(*best)
 
-    def overlaps(self, region):
-        try:
-            g = self.frameGeometry()
-            rx, ry = int(region.get("left", 0)), int(region.get("top", 0))
-            rw, rh = int(region.get("width", 0)), int(region.get("height", 0))
-            if not rw or not rh:
-                return False
-            return not (g.right() < rx or g.left() > rx + rw or g.bottom() < ry or g.top() > ry + rh)
-        except Exception:
-            return False
 
-
-# ---------------------------------------------------------------- 设置对话框
 class WinCombo(QComboBox):
     """Win11 风格下拉框：自绘 chevron，不用系统老式箭头。"""
 
@@ -472,7 +548,7 @@ class SettingsPage(QWidget):
         self.subnav.setObjectName("subNav")
         self.subnav.setFixedWidth(168)
         self.subnav.setFocusPolicy(Qt.NoFocus)
-        self.subnav.addItems(["常规", "模型与密钥", "快捷键"])
+        self.subnav.addItems(["常规", "模型与密钥", "快捷键", "答案窗"])
         self.subnav.setCurrentRow(0)
         lay.addWidget(self.subnav)
 
@@ -483,6 +559,7 @@ class SettingsPage(QWidget):
         self.stack.addWidget(self._build_general())
         self.stack.addWidget(self._build_model())
         self.stack.addWidget(self._build_hotkeys())
+        self.stack.addWidget(self._build_overlay())
         right.addWidget(self.stack, 1)
         lay.addLayout(right, 1)
         outer.addLayout(lay, 1)
@@ -596,6 +673,10 @@ class SettingsPage(QWidget):
         self.bank_first.setChecked(bool(self.cfg.get("bank_first", True)))
         c.addWidget(self.bank_first)
 
+        self.auto_bank = QCheckBox("自动把 AI 答案存进题库（下次同题秒回）")
+        self.auto_bank.setChecked(bool(self.cfg.get("auto_save_bank", True)))
+        c.addWidget(self.auto_bank)
+
         v.addWidget(card)
 
         card2 = QFrame()
@@ -630,6 +711,51 @@ class SettingsPage(QWidget):
         row.addWidget(lb)
         row.addWidget(widget, 1)
         return row
+
+    # ---------------- 答案窗
+    def _build_overlay(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
+
+        card = QFrame()
+        card.setObjectName("card")
+        c = QVBoxLayout(card)
+        c.setContentsMargins(16, 14, 16, 16)
+        c.setSpacing(14)
+
+        t = QLabel("答案窗外观")
+        t.setObjectName("sectionTitle")
+        c.addWidget(t)
+
+        self.sl_opacity = self._slider(c, "透明度",
+                                       int(self.cfg.get("overlay_opacity", 96)), 30, 100, "%")
+        self.sl_width = self._slider(c, "宽度",
+                                     int(self.cfg.get("overlay_width", 560)), 420, 1000, " px")
+        self.sl_font = self._slider(c, "字号",
+                                    int(self.cfg.get("overlay_font", 14)), 12, 22, " px")
+        v.addWidget(card)
+        v.addStretch(1)
+        return w
+
+    def _slider(self, parent_layout, label, value, lo, hi, suffix):
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        lb = QLabel(label)
+        lb.setMinimumWidth(72)
+        s = QSlider(Qt.Horizontal)
+        s.setRange(lo, hi)
+        s.setValue(value)
+        val = QLabel(f"{value}{suffix}")
+        val.setMinimumWidth(64)
+        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        s.valueChanged.connect(lambda v, l=val, suf=suffix: l.setText(f"{v}{suf}"))
+        row.addWidget(lb)
+        row.addWidget(s, 1)
+        row.addWidget(val)
+        parent_layout.addLayout(row)
+        return s
 
     # ---------------- 快捷键
     def _build_hotkeys(self):
@@ -708,6 +834,10 @@ class SettingsPage(QWidget):
             if b and b.text().startswith("F"):
                 hk[action] = b.text()
         c["hotkeys"] = hk
+        c["overlay_opacity"] = self.sl_opacity.value()
+        c["overlay_width"] = self.sl_width.value()
+        c["overlay_font"] = self.sl_font.value()
+        c["auto_save_bank"] = self.auto_bank.isChecked()
         return c
 
     def do_test(self):
@@ -1196,6 +1326,8 @@ class ScanWorker(QObject):
         self.idle_rounds = 0
         self.ocr = None
         self.bank_used = False
+        self.bank_score = 0.0
+        self.last_usage = {}
 
     def ensure_ocr(self):
         if self.ocr is None:
@@ -1273,6 +1405,7 @@ class ScanWorker(QObject):
                     hit = qbank.lookup(text)
                     if hit:
                         self.bank_used = True
+                        self.bank_score = float(hit.get("score", 0.0))
                         full = f"答案：{hit['answer']}\n解析：{hit['solution']}"
                         self.finished_answer.emit(full, 0.0)
                         self.detail.emit(
@@ -1286,6 +1419,11 @@ class ScanWorker(QObject):
 
                 client = ocr_ai.AiClient(self.cfg)
                 full, ai_cost = client.solve(text, on_delta=lambda d: self.delta.emit(d))
+                self.last_usage = dict(getattr(client, "last_usage", {}) or {})
+                if self.last_usage.get("total"):
+                    self.detail.emit(
+                        f"AI {ai_cost:.2f}s · 输入 {self.last_usage.get('in', 0)}"
+                        f" / 输出 {self.last_usage.get('out', 0)} tokens")
                 self.finished_answer.emit(full, ai_cost)
                 self.detail.emit(f"OCR {ocr_cost:.2f}s + AI {ai_cost:.2f}s ≈ {ocr_cost + ai_cost:.2f}s")
                 self.state.emit("完成", COLOR_OK)
@@ -2009,6 +2147,10 @@ class MainWindow(QWidget):
         self.cfg = config_store.load()
         self.add_log("设置已保存")
         self.setup_hotkeys()
+        try:
+            self.overlay.apply_settings()
+        except Exception:
+            pass
         if self.worker:
             self.worker.cfg = self.cfg
 
@@ -2356,13 +2498,20 @@ class MainWindow(QWidget):
             self.overlay.show()
         from_bank = bool(self.worker is not None and getattr(self.worker, "bank_used", False))
         if from_bank:
-            self.overlay.foot.setText("来自本地题库 · 未消耗 token")
+            score = float(getattr(self.worker, "bank_score", 0.0) or 0.0)
+            self.overlay.foot.setText(f"本地题库命中 · 相似度 {score:.2f} · 0 token（可点「纠错」改答案）")
         else:
-            self.overlay.foot.setText(f"{cost:.2f}s · 深色可拖动")
+            usage = getattr(self.worker, "last_usage", None) if self.worker else None
+            if usage and usage.get("total"):
+                self.overlay.foot.setText(
+                    f"AI {cost:.2f}s · 输入 {usage.get('in', 0)} / 输出 {usage.get('out', 0)} tokens")
+            else:
+                self.overlay.foot.setText(f"AI {cost:.2f}s · 可拖动 / 可纠错")
         self.overlay.raise_()
 
         # 存本地题库（题库命中的不重复存）
-        if not from_bank and self.last_question:
+        if (not from_bank and self.last_question
+                and self.cfg.get("auto_save_bank", True)):
             try:
                 if qbank.save(self.last_question, full):
                     self.add_log("已存入本地题库")
@@ -2379,6 +2528,23 @@ class MainWindow(QWidget):
                                     "cost": round(cost, 2)}, ensure_ascii=False) + "\n")
         except Exception:
             pass
+
+    def apply_correction(self, text):
+        """把用户改好的答案覆盖进题库 + 记一条历史。"""
+        q = (self.last_question or "").strip()
+        try:
+            if q:
+                qbank.save(q, text)
+            import json
+            hp = os.path.join(os.path.dirname(config_store.config_path()), "history.jsonl")
+            with open(hp, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    "q": q, "a": text, "cost": 0, "fixed": True},
+                                   ensure_ascii=False) + "\n")
+            self.add_log("已纠错：本地题库和历史都已更新")
+            self.overlay.foot.setText("已纠错 · 下次同一题直接用新答案")
+        except Exception as e:
+            self.add_log(f"纠错保存失败：{e}")
 
     def on_overlay_moved(self, pos):
         self.cfg["overlay_pos"] = [int(pos.x()), int(pos.y())]

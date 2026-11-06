@@ -44,6 +44,7 @@ class OcrEngine:
 class AiClient:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.last_usage = {}
 
     def _client(self):
         from openai import OpenAI
@@ -80,18 +81,34 @@ class AiClient:
         t0 = time.time()
         try:
             c = self._client()
-            stream = c.chat.completions.create(
+            kw = dict(
                 model=cfg.get("model"),
                 messages=[
-                    {"role": "system", "content": "你是严谨的解题助手，输出简洁准确。"},
+                    {"role": "system", "content": "你是严谨的解题助手。严格按格式输出：第一行「答案：」，第二行起「解析：」；不要复述题干，不要罗列全部选项（选择题只给正确选项的字母）。"},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=float(cfg.get("temperature", 0.2)),
                 max_tokens=int(cfg.get("max_tokens", 900)),
                 stream=True,
             )
+            try:
+                stream = c.chat.completions.create(
+                    stream_options={"include_usage": True}, **kw)
+            except Exception:
+                stream = c.chat.completions.create(**kw)
+            self.last_usage = {}
             buf = []
             for chunk in stream:
+                try:
+                    u = getattr(chunk, "usage", None)
+                    if u is not None:
+                        self.last_usage = {
+                            "in": int(getattr(u, "prompt_tokens", 0) or 0),
+                            "out": int(getattr(u, "completion_tokens", 0) or 0),
+                            "total": int(getattr(u, "total_tokens", 0) or 0),
+                        }
+                except Exception:
+                    pass
                 try:
                     delta = chunk.choices[0].delta.content or ""
                 except Exception:
