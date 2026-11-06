@@ -11,7 +11,7 @@ import traceback
 # ⚠️ 先导入 OCR（onnxruntime），再导入 PyQt5，否则会 0xC0000005 崩溃
 import ocr_ai  # noqa: F401  (顺序敏感)
 
-from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QObject, QTimer, QPoint, QRect,
+from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QObject, QTimer, QPoint, QRect, QSize,
                           QEvent, QPropertyAnimation, QEasingCurve, QVariantAnimation)
 from PyQt5.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QIcon, QPixmap,
                          QTextCursor, QGuiApplication)
@@ -28,6 +28,33 @@ import question_bank as qbank
 import updater
 
 APP_TITLE = "Knowlib"
+
+# 窗口四周留给阴影的透明边距（同时是原生拖拽缩放的命中区）
+SHADOW_MARGIN = 22
+
+# Win32：给无边框窗口加回原生 WS_THICKFRAME，
+# 这样系统自带的拖拽缩放 / Aero Snap / 最小化还原动画都能用
+GWL_STYLE = -16
+WS_THICKFRAME = 0x00040000
+WS_MINIMIZEBOX = 0x00020000
+WS_MAXIMIZEBOX = 0x00010000
+WS_SYSMENU = 0x00080000
+WM_NCCALCSIZE = 0x0083
+WM_NCHITTEST = 0x0084
+
+
+def enable_native_frame(widget):
+    """加上原生缩放边框样式（只留能力，不画系统标题栏）。"""
+    try:
+        hwnd = int(widget.winId())
+        u = ctypes.windll.user32
+        style = u.GetWindowLongW(hwnd, GWL_STYLE)
+        u.SetWindowLongW(hwnd, GWL_STYLE,
+                         style | WS_THICKFRAME | WS_MINIMIZEBOX
+                         | WS_MAXIMIZEBOX | WS_SYSMENU)
+    except Exception:
+        pass
+
 COLOR_OK = "#3ddc84"
 COLOR_WARN = "#ffb020"
 COLOR_ERR = "#ff5c5c"
@@ -434,7 +461,7 @@ class SettingsPage(QWidget):
         self.close_action.setCurrentIndex(_ci if _ci >= 0 else 0)
         form.addRow("关闭按钮", self.close_action)
 
-        self.animations = QCheckBox("界面动画（窗口展开 / 收起）")
+        self.animations = QCheckBox("界面动画（页面切换 / 淡入）")
         self.animations.setChecked(bool(self.cfg.get("animations", True)))
         form.addRow("外观", self.animations)
 
@@ -1178,7 +1205,7 @@ class TitleBar(QWidget):
         self.btn_min.setFixedSize(34, 30)
         self.btn_min.setCursor(Qt.PointingHandCursor)
         self.btn_min.setToolTip("最小化")
-        self.btn_min.clicked.connect(win.animate_minimize)
+        self.btn_min.clicked.connect(win.showMinimized)
         lay.addWidget(self.btn_min)
 
         self.btn_close = QPushButton("✕")
@@ -1201,23 +1228,6 @@ class TitleBar(QWidget):
         self._drag = None
 
 
-class _SnapWindow(QWidget):
-    """最小化动画用的快照窗：显示主窗口的截屏，然后飞到任务栏。"""
-
-    def __init__(self, pix, geo):
-        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-                         | Qt.Tool | Qt.WindowTransparentForInput)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self._pix = pix
-        self.setGeometry(geo)
-
-    def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        p.drawPixmap(self.rect(), self._pix)
-
-
 class MainWindow(QWidget):
     hotkey = pyqtSignal(str)
 
@@ -1238,12 +1248,16 @@ class MainWindow(QWidget):
         self._snap = None
         self._last_pos = None
         self._page_anim = None
+        self._page_name = None
+        self._saved_sizes = {}
         self._fade_effects = {}
 
         self.setWindowTitle(APP_TITLE)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(470, 492)
+        self.resize(470 + SHADOW_MARGIN * 2, 492 + SHADOW_MARGIN * 2)
+        self.setMinimumSize(430 + SHADOW_MARGIN * 2, 404 + SHADOW_MARGIN * 2)
+        enable_native_frame(self)
         self.setStyleSheet(
             "QWidget{color:#e6e9ef;font-family:'Microsoft YaHei';}"
             "QFrame#shell{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
@@ -1284,15 +1298,15 @@ class MainWindow(QWidget):
         )
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN)
         self.shell = QFrame()
         self.shell.setObjectName("shell")
         outer.addWidget(self.shell)
 
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(38)
-        shadow.setOffset(0, 10)
-        shadow.setColor(QColor(0, 0, 0, 160))
+        shadow.setBlurRadius(34)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(0, 0, 0, 170))
         self.shell.setGraphicsEffect(shadow)
 
         lay = QVBoxLayout(self.shell)
@@ -1402,24 +1416,33 @@ class MainWindow(QWidget):
         self.setup_hotkeys()
         self.setup_tray()
 
-    # -------- 页面切换
+    # -------- 页面切换（窗口可自由缩放，记住每个页面的尺寸）
     PAGE_SIZES = {"home": (470, 492), "history": (900, 600),
                   "bank": (900, 620), "settings": (580, 762)}
+    PAGE_MINS = {"home": (430, 404), "history": (700, 470),
+                 "bank": (700, 440), "settings": (520, 600)}
 
     def _anim_on(self):
         return bool(self.cfg.get("animations", True))
+
+    def _win_size(self, content):
+        return (content[0] + SHADOW_MARGIN * 2, content[1] + SHADOW_MARGIN * 2)
 
     def show_page(self, name, animate=True):
         page = {"home": self.page_home, "history": self.page_history,
                 "bank": self.page_bank, "settings": self.page_settings}.get(name)
         if page is None:
             return
-        w, h = self.PAGE_SIZES.get(name, (470, 492))
-        same = (page is self.stack.currentWidget() and
-                (self.width(), self.height()) == (w, h))
+        if self._page_name:
+            self._saved_sizes[self._page_name] = self.size()
         self.stack.setCurrentWidget(page)
-        if same:
-            return
+        self._page_name = name
+        mw, mh = self._win_size(self.PAGE_MINS.get(name, (430, 404)))
+        self.setMinimumSize(mw, mh)
+        w, h = self._saved_sizes.get(name) or self._win_size(
+            self.PAGE_SIZES.get(name, (470, 492)))
+        w = max(w, mw)
+        h = max(h, mh)
         self._resize_to(w, h, page, animate and self._anim_on())
         if name == "history":
             self.page_history.reload()
@@ -1427,17 +1450,17 @@ class MainWindow(QWidget):
             self.page_bank.reload()
 
     def _resize_to(self, w, h, page=None, animate=True):
-        """窗口尺寸/位置过渡；非动画时直接 setFixedSize。"""
+        """窗口尺寸/位置过渡（不再锁死尺寸，用户随时可以拖边缩放）。"""
         start = self.geometry()
         end = self._clamped_rect(QRect(start.x(), start.y(), w, h))
-        if not animate:
-            self.setFixedSize(w, h)
+        if not animate or start.size() == end.size():
+            self.resize(end.size())
             self.move(end.topLeft())
+            if page is not None:
+                self._fade_in(page)
             return
         if self._page_anim is not None:
             self._page_anim.stop()
-        self.setMinimumSize(0, 0)
-        self.setMaximumSize(16777215, 16777215)
         a = QPropertyAnimation(self, b"geometry", self)
         a.setDuration(230)
         a.setStartValue(start)
@@ -1445,7 +1468,6 @@ class MainWindow(QWidget):
         a.setEasingCurve(QEasingCurve.OutCubic)
 
         def done():
-            self.setFixedSize(w, h)
             self._keep_on_screen()
             if page is not None:
                 self._fade_in(page)
@@ -1483,64 +1505,7 @@ class MainWindow(QWidget):
     def _keep_on_screen(self):
         self.move(self._clamped_rect(self.geometry()).topLeft())
 
-    # -------- 最小化 / 恢复动画
-    def animate_minimize(self):
-        """先把快照飞向任务栏，再真正最小化。"""
-        if not self._anim_on() or self.isMinimized():
-            self.showMinimized()
-            return
-        geo = self.frameGeometry()
-        try:
-            snap = self.grab()
-        except Exception:
-            self.showMinimized()
-            return
-        ov = _SnapWindow(snap, geo)
-        ov.show()
-        self._snap = ov
-        self._last_pos = self.pos()
-        self.showMinimized()
-
-        scr = QGuiApplication.screenAt(geo.center()) or QApplication.primaryScreen()
-        sg, ag = scr.geometry(), scr.availableGeometry()
-        if ag.bottom() < sg.bottom():
-            cx, cy = geo.center().x(), sg.bottom() - 20
-        elif ag.top() > sg.top():
-            cx, cy = geo.center().x(), sg.top() + 20
-        elif ag.left() > sg.left():
-            cx, cy = sg.left() + 20, geo.center().y()
-        else:
-            cx, cy = sg.right() - 20, geo.center().y()
-        tw = max(54, int(geo.width() * 0.16))
-        th = max(40, int(geo.height() * 0.16))
-        tgt = QRect(int(cx - tw / 2), int(cy - th / 2), tw, th)
-
-        anim = QVariantAnimation(self)
-        anim.setDuration(240)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.InCubic)
-
-        def step(v):
-            v = float(v)
-            r = QRect(
-                int(geo.x() + (tgt.x() - geo.x()) * v),
-                int(geo.y() + (tgt.y() - geo.y()) * v),
-                max(1, int(geo.width() + (tgt.width() - geo.width()) * v)),
-                max(1, int(geo.height() + (tgt.height() - geo.height()) * v)))
-            ov.setGeometry(r)
-            ov.setWindowOpacity(max(0.0, 1.0 - v * 1.1))
-
-        def finish():
-            ov.close()
-            ov.deleteLater()
-            self._snap = None
-
-        anim.valueChanged.connect(step)
-        anim.finished.connect(finish)
-        self._mini_anim = anim
-        anim.start()
-
+    # -------- 原生窗口行为（缩放 / 贴边 / 最小化动画交给系统）
     def changeEvent(self, e):
         if e.type() == QEvent.WindowStateChange:
             was, now = self._was_minimized, self.isMinimized()
@@ -1548,18 +1513,45 @@ class MainWindow(QWidget):
                 self._was_minimized = True
             elif was and not now:
                 self._was_minimized = False
-                QTimer.singleShot(0, self._pop_in)
         super().changeEvent(e)
 
     def nativeEvent(self, eventType, message):
-        """拦下任务栏右键/左键的 SC_MINIMIZE，先跑自己的飞入动画。"""
+        """无边框 + WS_THICKFRAME：不画系统标题栏，但保留系统缩放/贴边。"""
         try:
             if eventType == b"windows_generic_MSG":
                 msg = ctypes.wintypes.MSG.from_address(int(message))
-                if msg.message == 0x0112 and (int(msg.wParam) & 0xFFF0) == 0xF020:
-                    if self._anim_on() and not self.isMinimized():
-                        QTimer.singleShot(0, self.animate_minimize)
-                        return True, 0
+                if msg.message == WM_NCCALCSIZE and msg.wParam:
+                    # 客户区 = 整个窗口
+                    return True, 0
+                if msg.message == WM_NCHITTEST:
+                    r = ctypes.wintypes.RECT()
+                    ctypes.windll.user32.GetWindowRect(msg.hWnd, ctypes.byref(r))
+                    x = ctypes.c_short(int(msg.lParam) & 0xFFFF).value
+                    y = ctypes.c_short((int(msg.lParam) >> 16) & 0xFFFF).value
+                    b = SHADOW_MARGIN + 6
+                    l = x < r.left + b
+                    rr = x >= r.right - b
+                    t = y < r.top + b
+                    bt = y >= r.bottom - b
+                    hit = 0
+                    if t and l:
+                        hit = 13
+                    elif t and rr:
+                        hit = 14
+                    elif bt and l:
+                        hit = 16
+                    elif bt and rr:
+                        hit = 17
+                    elif l:
+                        hit = 10
+                    elif rr:
+                        hit = 11
+                    elif t:
+                        hit = 12
+                    elif bt:
+                        hit = 15
+                    if hit:
+                        return True, hit
         except Exception:
             pass
         return super().nativeEvent(eventType, message)
