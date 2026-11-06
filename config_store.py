@@ -12,7 +12,7 @@ import sys
 APP_NAME = "XiaoTuanSouTi"      # 旧目录名，仅用于迁移
 BRAND = "Knowlib"               # 新数据目录名
 REG_NAME = "Knowlib"            # 开机自启的注册表项名
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.9"
 
 DATA_FILES = ("config.json", "bank.db", "history.jsonl")
 
@@ -20,8 +20,8 @@ PROVIDERS = {
     "DeepSeek 官方": {
         "base_url": "https://api.deepseek.com/v1",
         "model": "deepseek-chat",
-        "vision": "",
-        "key_hint": "sk- 开头，platform.deepseek.com；⚠ 只有文本模型，不能发图片",
+        "vision": "deepseek-flash",
+        "key_hint": "sk- 开头，platform.deepseek.com；看图用 deepseek-flash（旧名 deepseek-v4-flash-vision-exp 也兼容）",
     },
     "阿里百炼（通义千问）": {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -61,8 +61,19 @@ PROVIDERS = {
     },
 }
 
+VISION_PRESETS = [
+    "deepseek-flash",
+    "deepseek-v4-flash-vision-exp",
+    "qwen-vl-max",
+    "qwen-vl-plus",
+    "glm-4v-plus",
+    "moonshot-v1-8k-vision-preview",
+    "Qwen/Qwen2.5-VL-72B-Instruct",
+    "gpt-4o-mini",
+    "qwen2.5vl:7b",
+]
+
 DEFAULTS = {
-    "base_url": "https://api.deepseek.com/v1",
     "api_key": "",
     "model": "deepseek-chat",
     "provider": "DeepSeek 官方",
@@ -76,9 +87,14 @@ DEFAULTS = {
     "animations": True,
     "hotkeys": {"region": "F1", "pause": "F2", "shot": "F3",
                 "again": "F4", "overlay": "F5"},
-    "overlay_opacity": 96,
+    "base_url": "https://api.deepseek.com/v1",
     "overlay_width": 560,
-    "overlay_font": 14,
+    "overlay_height": 0,          # 0 = 高度自适应
+    "overlay_font": 14,           # 解析（正文）字号
+    "overlay_answer_font": 34,    # 答案大字号
+    "overlay_answer_color": "#7ee787",
+    "overlay_text_color": "#d5dae3",
+    "overlay_opacity": 96,
     "auto_save_bank": True,
     "vision_model": "",
     "vision_mode": "auto",

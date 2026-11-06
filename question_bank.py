@@ -127,6 +127,48 @@ def set_type(qid, qtype):
         return False
 
 
+def update(qid, q_text, answer, solution, qtype=None):
+    """手动编辑一条题目（题目/答案/解析/题型）。返回 (ok, msg)。"""
+    text = (q_text or "").strip()
+    if len(normalize(text)) < 2:
+        return False, "题目不能为空"
+    norm = normalize(text)
+    try:
+        with _conn() as c:
+            dup = c.execute("SELECT id FROM questions WHERE norm=? AND id<>?",
+                            (norm, qid)).fetchone()
+            if dup:
+                return False, "题库里已有同样的题目"
+            if qtype is None:
+                qtype = detect_type(text, answer or "")
+            c.execute("UPDATE questions SET norm=?, q_text=?, answer=?, solution=?,"
+                      " qtype=? WHERE id=?",
+                      (norm, text, (answer or "").strip(),
+                       (solution or "").strip(), qtype, qid))
+        return True, "已保存"
+    except Exception as e:
+        return False, str(e)
+
+
+def add_manual(q_text, answer, solution, qtype="", source="manual"):
+    """用户手动新建一条题目。返回 (ok, msg, qid)。"""
+    text = (q_text or "").strip()
+    if len(normalize(text)) < 2:
+        return False, "题目不能为空", None
+    norm = normalize(text)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with _conn() as c:
+            cur = c.execute(
+                "INSERT INTO questions(norm,q_text,answer,solution,source,hits,created,used,qtype)"
+                " VALUES(?,?,?,?,?,0,?,?,?)",
+                (norm, text, (answer or "").strip(), (solution or "").strip(),
+                 source, now, now, qtype or detect_type(text, answer or "")))
+            return True, "已添加", cur.lastrowid
+    except Exception as e:
+        return False, ("题库里已有同样的题目" if "UNIQUE" in str(e) else str(e)), None
+
+
 def _row_to_dict(row, score=1.0):
     keys = row.keys()
     return {"id": row["id"], "q_text": row["q_text"], "answer": row["answer"] or "",

@@ -204,12 +204,24 @@ def _inline(text):
                    r'background:#161b22;padding:1px 4px;border-radius:3px">\1</span>', t)
         t = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", t)
         t = re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)", r"<i>\1</i>", t)
+        t = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", lambda m: _img_html(m.group(2)), t)
         t = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<span style="color:#58a6ff">\1</span>', t)
         out.append(t)
     return "".join(out)
 
 
-def to_html(md, color="#c9d1d9", accent="#8fb6ff"):
+def _img_html(src):
+    """Local image (screenshots inserted into bank) -> img tag QTextBrowser can show."""
+    s = (src or "").strip().strip('"').strip("'")
+    if s.startswith("file://") or s.startswith("http://") or s.startswith("https://"):
+        url = s
+    else:
+        url = "file:///" + s.replace("\\", "/")
+    return ('<br/><img src="%s" style="max-width:100%%;'
+            'border-radius:8px;margin:6px 0" />' % url)
+
+
+def to_html(md, color="#e6e9ef", accent="#8fb6ff", font_size=13):
     """Markdown → HTML 片段（深色主题）。"""
     if not md:
         return f'<div style="color:#7f8896;padding:12px">（空）</div>'
@@ -338,7 +350,7 @@ def to_html(md, color="#c9d1d9", accent="#8fb6ff"):
     for idx, b in enumerate(blocks):
         body = body.replace(f"\x00B{idx}\x00", b)
     body = body.replace("\x00", "")
-    return (f'<div style="color:{color};font-size:13px;line-height:1.65;'
+    return (f'<div style="color:{color};font-size:{font_size}px;line-height:1.65;'
             f'font-family:Microsoft YaHei UI,Segoe UI,sans-serif">{body}</div>')
 
 

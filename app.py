@@ -3,6 +3,7 @@ import io
 import os
 import sys
 import time
+import shutil
 import ctypes
 import ctypes.wintypes  # noqa: F401
 import hashlib
@@ -110,23 +111,119 @@ def _box(parent, icon, title, text):
     return box
 
 
-def ask_yes(parent, title, text):
-    box = _box(parent, QMessageBox.Question, title, text)
-    box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-    box.setDefaultButton(QMessageBox.Yes)
-    return box.exec_() == QMessageBox.Yes
+class _DarkBox(QDialog):
+    """现代化深色弹窗（替代老旧的 QMessageBox 样式）。"""
+
+    KINDS = {
+        "question": ("#f0b429", "？"),
+        "warning": ("#f0b429", "！"),
+        "error": ("#e5484d", "×"),
+        "info": ("#3b82f6", "i"),
+    }
+
+    def __init__(self, parent, title, text, kind="info",
+                 ok_text="确定", cancel_text=None, danger=False):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self._ok = False
+
+        col, glyph = self.KINDS.get(kind, self.KINDS["info"])
+
+        card = QFrame(self)
+        card.setObjectName("boxCard")
+        card.setStyleSheet(
+            "#boxCard{background:#1b1f27;border:1px solid #2c3340;border-radius:14px;}"
+            "QLabel{color:#e6e9ef;background:transparent;}"
+            "QPushButton{background:#252b36;color:#dfe3ea;border:none;"
+            "border-radius:9px;padding:8px 18px;font-size:13px;}"
+            "QPushButton:hover{background:#2f3746;}"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 16, 20, 20)
+        outer.addWidget(card)
+        sh = QGraphicsDropShadowEffect(card)
+        sh.setBlurRadius(30)
+        sh.setOffset(0, 10)
+        sh.setColor(QColor(0, 0, 0, 180))
+        card.setGraphicsEffect(sh)
+
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(12)
+
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        badge = QLabel(glyph)
+        badge.setFixedSize(22, 22)
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setStyleSheet(
+            f"color:{col};background:{col}22;border-radius:11px;"
+            f"font-size:13px;font-weight:700;")
+        head.addWidget(badge)
+        t = QLabel(title)
+        t.setStyleSheet("font-size:14px;font-weight:600;color:#eef1f6;")
+        head.addWidget(t, 1)
+        lay.addLayout(head)
+
+        msg = QLabel(text or "")
+        msg.setWordWrap(True)
+        msg.setStyleSheet("color:#a6afbd;font-size:12.5px;line-height:1.6;")
+        lay.addWidget(msg)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        if cancel_text:
+            b = QPushButton(cancel_text)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(self.reject)
+            row.addWidget(b)
+        ok = QPushButton(ok_text)
+        ok.setCursor(Qt.PointingHandCursor)
+        ok.setDefault(True)
+        ok_color = "#e5484d" if danger else "#3b6ef0"
+        ok_hover = "#ef5f64" if danger else "#4c7df5"
+        ok.setStyleSheet(
+            f"QPushButton{{background:{ok_color};color:#fff;border:none;"
+            f"border-radius:9px;padding:8px 20px;font-size:13px;font-weight:600;}}"
+            f"QPushButton:hover{{background:{ok_hover};}}")
+        ok.clicked.connect(self._do_ok)
+        row.addWidget(ok)
+        lay.addLayout(row)
+
+        self.setFixedWidth(400)
+        self.adjustSize()
+        if parent is not None:
+            try:
+                g = parent.window().geometry()
+                self.move(g.center().x() - self.width() // 2,
+                          g.center().y() - self.height() // 2)
+            except Exception:
+                pass
+
+    def _do_ok(self):
+        self._ok = True
+        self.accept()
+
+    @property
+    def ok(self):
+        return self._ok
+
+
+def ask_yes(parent, title, text, ok_text="确定", danger=True):
+    d = _DarkBox(parent, title, text, "question", ok_text=ok_text,
+                 cancel_text="取消", danger=danger)
+    d.exec_()
+    return d.ok
 
 
 def warn_box(parent, title, text):
-    box = _box(parent, QMessageBox.Warning, title, text)
-    box.setStandardButtons(QMessageBox.Ok)
-    box.exec_()
+    _DarkBox(parent, title, text, "warning", ok_text="知道了").exec_()
 
 
 def error_box(parent, title, text):
-    box = _box(parent, QMessageBox.Critical, title, text)
-    box.setStandardButtons(QMessageBox.Ok)
-    box.exec_()
+    _DarkBox(parent, title, text, "error", ok_text="知道了").exec_()
 
 
 
@@ -280,28 +377,44 @@ class AnswerOverlay(QWidget):
         self.setWindowOpacity(max(0.25, min(1.0, op)))
 
     def preview(self, opts, text=None):
-        """设置页拖动时实时预览外观（不改真实 cfg）。"""
-        self._was_visible = self.isVisible()
+        """设置页拖动时实时预览外观。
+        答案窗本来就开着时 → 直接改真窗口，所见即所得；
+        没开着 → 在原来的位置弹一张示例卡。
+        """
+        was_visible = self.isVisible()
+        if not getattr(self, "_pv_active", False):
+            self._was_visible = was_visible
+            self._pv_text_backup = None
+        self._pv_active = True
         self._override = dict(opts or {})
         self.apply_settings()
-        if text is not None:
-            self.title.setText("答案 · 预览")
-            self.set_text(text)
-        scr = QApplication.primaryScreen().availableGeometry()
-        self.adjustSize()
-        self.move(scr.center().x() - self.width() // 2, scr.top() + 90)
-        self.show()
-        self.raise_()
+        if was_visible:
+            # 真窗口开着：只改外观，不动内容
+            self.raise_()
+        else:
+            if text is not None:
+                self.title.setText("答案 · 预览")
+                self.set_text(text)
+            self.adjustSize()
+            pos = (getattr(self.host, "cfg", {}) or {}).get("overlay_pos") or []
+            if len(pos) == 2:
+                self.move(int(pos[0]), int(pos[1]))
+            else:
+                scr = QApplication.primaryScreen().availableGeometry()
+                self.move(scr.center().x() - self.width() // 2, scr.top() + 90)
+            self.show()
+            self.raise_()
         t = getattr(self, "_pv_hide", None)
         if t is None:
             t = QTimer(self)
             t.setSingleShot(True)
             t.timeout.connect(self._end_preview)
             self._pv_hide = t
-        t.start(3200)
+        t.start(8000)
 
     def _end_preview(self):
         self._override = {}
+        self._pv_active = False
         try:
             self.title.setText("答案")
         except Exception:
@@ -309,20 +422,40 @@ class AnswerOverlay(QWidget):
         if not getattr(self, "_was_visible", False):
             self.hide()
             self.set_text("")
+        else:
+            # 真窗口还开着：恢复成真实配置的外观
+            self.apply_settings()
 
     def apply_settings(self):
         cfg = self._cfg()
         self._width = int(cfg.get("overlay_width", 560))
         self._font = int(cfg.get("overlay_font", 14))
+        self._afont = int(cfg.get("overlay_answer_font", self._font + 20))
+        try:
+            self._height = int(cfg.get("overlay_height", 0) or 0)
+        except Exception:
+            self._height = 0
         self.setFixedWidth(self._width)
         self._apply_opacity()
+        self._acolor = (cfg.get("overlay_answer_color") or "#7ee787").strip()
+        self._tcolor = (cfg.get("overlay_text_color") or "#d5dae3").strip()
         self.answer.setStyleSheet(
-            f"font-size:{self._font + 20}px;font-weight:800;color:#7ee787;"
+            f"font-size:{self._afont}px;font-weight:800;color:{self._acolor};"
             "padding:10px 14px;border-radius:12px;"
             "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             "stop:0 rgba(126,231,135,26),stop:1 rgba(126,231,135,10));")
         self.body.setStyleSheet(
-            f"background:transparent;border:none;color:#d5dae3;font-size:{self._font}px;")
+            f"background:transparent;border:none;color:{self._tcolor};"
+            f"font-size:{self._font}px;")
+        if self._height >= 180:
+            self.body.setMaximumHeight(max(90, self._height - 170))
+            self.setFixedHeight(self._height)
+        else:
+            self.body.setMaximumHeight(380)
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self.resize(self._width, self.height())
+            self.adjustSize()
         self._render()
 
     # ---------------- 内容
@@ -384,15 +517,17 @@ class AnswerOverlay(QWidget):
             rows = []
             for k, txt in opts:
                 on = bool(letter) and k.upper() == letter
-                color = "#7ee787" if on else "#9aa4b2"
+                color = self._acolor if on else self._tcolor
                 weight = "700" if on else "400"
                 mark = "  ✓" if on else ""
                 rows.append(
                     f"<div style='color:{color};font-weight:{weight};"
-                    f"padding:2px 0'>{k}．{_html.escape(txt)}{mark}</div>")
+                    f"font-size:{self._font}px;padding:2px 0'>"
+                    f"{k}．{_html.escape(txt)}{mark}</div>")
             parts.append("<div style='margin-bottom:10px'>" + "".join(rows) + "</div>")
         if tail:
-            parts.append(md_render.to_html(tail))
+            parts.append(md_render.to_html(tail, color=self._tcolor,
+                                           font_size=self._font))
         self.body.setHtml("".join(parts) if parts else "")
         self.part_label.setVisible(bool(tail))
         self.body.verticalScrollBar().setValue(0)
@@ -707,8 +842,14 @@ class SettingsPage(QWidget):
         self.model.setPlaceholderText("deepseek-chat")
         c.addLayout(self._labeled("模型", self.model))
 
-        self.vision_model = QLineEdit(self.cfg.get("vision_model", ""))
-        self.vision_model.setPlaceholderText("留空 = 不用；例：qwen-vl-max / gpt-4o-mini")
+        self.vision_model = QComboBox()
+        self.vision_model.setEditable(True)
+        self.vision_model.addItem("")
+        self.vision_model.addItems(config_store.VISION_PRESETS)
+        self.vision_model.setCurrentText(self.cfg.get("vision_model", "") or "")
+        if self.vision_model.lineEdit():
+            self.vision_model.lineEdit().setPlaceholderText(
+                "留空 = 不看图；可从列表选，也可直接输入")
         c.addLayout(self._labeled("视觉模型", self.vision_model))
 
         self.vision_mode = WinCombo()
@@ -778,7 +919,15 @@ class SettingsPage(QWidget):
             self.base_url.setText(p["base_url"])
         if p.get("model"):
             self.model.setText(p["model"])
-        self.vision_model.setText(p.get("vision", "") or "")
+        v = (p.get("vision") or "").strip()
+        self.vision_model.clear()
+        self.vision_model.addItem("")
+        if v:
+            self.vision_model.addItem(v)
+        for x in config_store.VISION_PRESETS:
+            if x and x != v:
+                self.vision_model.addItem(x)
+        self.vision_model.setCurrentText(v)
         self.hint.setText(p.get("key_hint", ""))
 
     # ---------------- 答案窗
@@ -802,22 +951,81 @@ class SettingsPage(QWidget):
                                        int(self.cfg.get("overlay_opacity", 96)), 30, 100, "%")
         self.sl_width = self._slider(c, "宽度",
                                      int(self.cfg.get("overlay_width", 560)), 420, 1000, " px")
-        self.sl_font = self._slider(c, "字号",
+        self.sl_font = self._slider(c, "解析字号",
                                     int(self.cfg.get("overlay_font", 14)), 12, 22, " px")
-        for sl in (self.sl_opacity, self.sl_width, self.sl_font):
+        self.sl_afont = self._slider(c, "答案字号",
+                                     int(self.cfg.get("overlay_answer_font",
+                                                      int(self.cfg.get("overlay_font", 14)) + 20)), 24, 64, " px")
+        self.sl_height = self._slider(c, "高度",
+                                      int(self.cfg.get("overlay_height", 420) or 420), 180, 1000, " px")
+        hrow = QHBoxLayout()
+        self.chk_auto_h = QCheckBox("高度自适应（跟内容自动变，需要固定高度就取消勾选）")
+        self.chk_auto_h.setChecked(int(self.cfg.get("overlay_height", 0) or 0) < 180)
+        self.sl_height.setEnabled(not self.chk_auto_h.isChecked())
+        self.chk_auto_h.toggled.connect(lambda on: (self.sl_height.setEnabled(not on), self._fire_preview()))
+        hrow.addWidget(self.chk_auto_h)
+        hrow.addStretch(1)
+        c.addLayout(hrow)
+        for sl in (self.sl_opacity, self.sl_width, self.sl_font, self.sl_afont, self.sl_height):
             sl.valueChanged.connect(self._fire_preview)
+        self._acolor_holder = self._color_row(
+            c, "答案颜色", "overlay_answer_color", "#7ee787")
+        self._tcolor_holder = self._color_row(
+            c, "解析颜色", "overlay_text_color", "#d5dae3")
         prow = QHBoxLayout()
         self.btn_preview = QPushButton("👁 预览答案窗")
         self.btn_preview.setCursor(Qt.PointingHandCursor)
         self.btn_preview.clicked.connect(self._fire_preview)
         prow.addWidget(self.btn_preview)
-        self.preview_hint = QLabel("拖滑块就能实时看到变化")
+        self.preview_hint = QLabel("拖一下就实时生效，并自动保存")
         self.preview_hint.setStyleSheet("color:#7f8896;font-size:11px;")
         prow.addWidget(self.preview_hint, 1)
         c.addLayout(prow)
         v.addWidget(card)
         v.addStretch(1)
         return w
+
+    def _color_row(self, parent_layout, label, key, default):
+        """一行颜色选择（点色块弹调色板，带几个常用色）。"""
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        lb = QLabel(label)
+        lb.setMinimumWidth(72)
+        row.addWidget(lb)
+        holder = [self.cfg.get(key, default) or default]
+        btn = QPushButton()
+        btn.setFixedSize(72, 26)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        def paint():
+            c0 = holder[0]
+            btn.setText(c0)
+            btn.setStyleSheet(
+                "QPushButton{background:%s;color:#101418;border:none;"
+                "border-radius:7px;font-size:11px;font-weight:700;}" % c0)
+        paint()
+
+        def pick():
+            from PyQt5.QtWidgets import QColorDialog
+            c0 = QColorDialog.getColor(QColor(holder[0]), self, "选一个颜色")
+            if c0.isValid():
+                holder[0] = c0.name()
+                paint()
+                self._fire_preview()
+
+        btn.clicked.connect(pick)
+        row.addWidget(btn)
+        for preset in ("#7ee787", "#e6e9ef", "#ffd166", "#ff8fa3", "#7ec8ff"):
+            pb = QPushButton()
+            pb.setFixedSize(18, 18)
+            pb.setCursor(Qt.PointingHandCursor)
+            pb.setStyleSheet(
+                "QPushButton{background:%s;border-radius:9px;border:1px solid #2c3340;}" % preset)
+            pb.clicked.connect(lambda _c=False, v=preset: (holder.__setitem__(0, v), paint(), self._fire_preview()))
+            row.addWidget(pb)
+        row.addStretch(1)
+        parent_layout.addLayout(row)
+        return holder
 
     def _fire_preview(self, *_a):
         """滑块一变就通知主窗预览（60ms 防抖）。"""
@@ -837,7 +1045,11 @@ class SettingsPage(QWidget):
             return
         cb({"overlay_opacity": self.sl_opacity.value(),
             "overlay_width": self.sl_width.value(),
-            "overlay_font": self.sl_font.value()})
+            "overlay_font": self.sl_font.value(),
+            "overlay_answer_font": self.sl_afont.value(),
+            "overlay_answer_color": self._acolor_holder[0],
+            "overlay_text_color": self._tcolor_holder[0],
+            "overlay_height": 0 if self.chk_auto_h.isChecked() else self.sl_height.value()})
 
     def _slider(self, parent_layout, label, value, lo, hi, suffix):
         row = QHBoxLayout()
@@ -937,8 +1149,12 @@ class SettingsPage(QWidget):
         c["overlay_opacity"] = self.sl_opacity.value()
         c["overlay_width"] = self.sl_width.value()
         c["overlay_font"] = self.sl_font.value()
+        c["overlay_answer_font"] = self.sl_afont.value()
+        c["overlay_answer_color"] = self._acolor_holder[0]
+        c["overlay_text_color"] = self._tcolor_holder[0]
+        c["overlay_height"] = 0 if self.chk_auto_h.isChecked() else self.sl_height.value()
         c["auto_save_bank"] = self.auto_bank.isChecked()
-        c["vision_model"] = self.vision_model.text().strip()
+        c["vision_model"] = self.vision_model.currentText().strip()
         c["vision_mode"] = self.vision_mode.currentData() or "auto"
         return c
 
@@ -1199,9 +1415,9 @@ class HistoryPage(QWidget):
             f"<div style='color:#7f8896;font-size:12px'>"
             f"{self._esc(it.get('t', ''))}{cost_s}</div>"
             f"<div style='color:#8fb6ff;font-size:12px;margin:12px 0 4px'>题目</div>"
-            + md_render.to_html(q)
+            + md_render.to_html(q, color="#e6e9ef", font_size=14)
             + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>答案与解析</div>"
-            + md_render.to_html(a, color="#d6f5dd")
+            + md_render.to_html(a, color="#e6e9ef", font_size=14)
         )
         self.view.setHtml(html)
         sb = self.view.verticalScrollBar()
@@ -1272,6 +1488,106 @@ class HistoryPage(QWidget):
 
 
 # ---------------------------------------------------------------- 本地题库窗
+class EditQuestionDialog(QDialog):
+    """编辑 / 新建一条题库题目，支持在解析里插入图片。"""
+
+    QTYPES = ["", "选择题", "多选题", "判断题", "填空题", "简答题", "计算题"]
+
+    def __init__(self, parent=None, item=None, on_saved=None):
+        super().__init__(parent)
+        self.item = item or {}
+        self.on_saved = on_saved
+        self.setWindowTitle("编辑题目" if item else "新建题目")
+        self.resize(700, 640)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(8)
+
+        def _lbl(txt):
+            lb = QLabel(txt)
+            lb.setStyleSheet("color:#8fb6ff;font-size:12px;")
+            lay.addWidget(lb)
+
+        _lbl("题目（支持 Markdown / LaTeX，例如 $x^2$）")
+        self.q = QPlainTextEdit(self.item.get("q_text", ""))
+        self.q.setMinimumHeight(120)
+        lay.addWidget(self.q, 2)
+
+        _lbl("答案")
+        self.a = QPlainTextEdit(self.item.get("answer", ""))
+        self.a.setMinimumHeight(60)
+        lay.addWidget(self.a, 1)
+
+        _lbl("解析（可在光标处插入图片）")
+        self.s = QPlainTextEdit(self.item.get("solution", ""))
+        self.s.setMinimumHeight(150)
+        lay.addWidget(self.s, 3)
+
+        brow = QHBoxLayout()
+        brow.addWidget(QLabel("题型"))
+        self.cbo = QComboBox()
+        self.cbo.addItems(self.QTYPES)
+        cur = self.item.get("qtype") or ""
+        if cur in self.QTYPES:
+            self.cbo.setCurrentText(cur)
+        brow.addWidget(self.cbo)
+        self.btn_img = QPushButton("🖼 插入图片")
+        self.btn_img.setCursor(Qt.PointingHandCursor)
+        self.btn_img.clicked.connect(self.insert_image)
+        brow.addWidget(self.btn_img)
+        brow.addStretch(1)
+        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_ok = QPushButton("保存")
+        self.btn_ok.setStyleSheet(
+            "QPushButton{background:#2f6feb;color:#fff;border:none;border-radius:8px;"
+            "padding:7px 18px;}QPushButton:hover{background:#3f7ffb;}")
+        self.btn_ok.clicked.connect(self.do_save)
+        brow.addWidget(self.btn_cancel)
+        brow.addWidget(self.btn_ok)
+        lay.addLayout(brow)
+
+    def insert_image(self):
+        from PyQt5.QtWidgets import QFileDialog
+        p, _ = QFileDialog.getOpenFileName(
+            self, "插入图片", "",
+            "图片 (*.png *.jpg *.jpeg *.gif *.bmp *.webp)")
+        if not p:
+            return
+        try:
+            d = os.path.join(os.path.dirname(config_store.config_path()), "bank_images")
+            os.makedirs(d, exist_ok=True)
+            name = f"{time.strftime('%Y%m%d-%H%M%S')}_{os.path.basename(p)}"
+            dst = os.path.join(d, name)
+            shutil.copy2(p, dst)
+            cur = self.s.textCursor()
+            cur.insertText(f"\n![]({dst})\n")
+            self.s.setTextCursor(cur)
+            self.s.setFocus()
+        except Exception as e:
+            error_box(self, "插图失败", str(e))
+
+    def do_save(self):
+        q = self.q.toPlainText().strip()
+        a = self.a.toPlainText().strip()
+        s = self.s.toPlainText().strip()
+        t = self.cbo.currentText().strip()
+        if not q:
+            warn_box(self, "还差题目", "题目不能为空")
+            return
+        if self.item.get("id"):
+            ok, msg = qbank.update(self.item["id"], q, a, s, t)
+        else:
+            ok, msg, _qid = qbank.add_manual(q, a, s, t, source="manual")
+        if not ok:
+            error_box(self, "没保存成功", msg)
+            return
+        if self.on_saved:
+            self.on_saved()
+        self.accept()
+
+
 class BankPage(QWidget):
     """本地题库：检索 / 复制 / 删除 / 导入导出（内嵌在主窗口里）。"""
 
@@ -1304,6 +1620,7 @@ class BankPage(QWidget):
         self.list = QListWidget()
         self.list.setFixedWidth(280)
         self.list.currentRowChanged.connect(self.show_item)
+        self.list.itemDoubleClicked.connect(lambda _i: self.edit_current())
         body.addWidget(self.list)
 
         right = QVBoxLayout()
@@ -1312,6 +1629,10 @@ class BankPage(QWidget):
         tools1 = QHBoxLayout()
         self.btn_copy = QPushButton("复制答案")
         self.btn_copy.clicked.connect(self.copy_current)
+        self.btn_edit = QPushButton("编辑这条")
+        self.btn_edit.clicked.connect(self.edit_current)
+        self.btn_new = QPushButton("＋ 新建题目")
+        self.btn_new.clicked.connect(self.new_question)
         self.btn_del = QPushButton("删除这条")
         self.btn_del.clicked.connect(self.delete_current)
         self.btn_all = QPushButton("全选")
@@ -1319,6 +1640,8 @@ class BankPage(QWidget):
         self.btn_none = QPushButton("全不选")
         self.btn_none.clicked.connect(lambda: self.check_all(False))
         tools1.addWidget(self.btn_copy)
+        tools1.addWidget(self.btn_edit)
+        tools1.addWidget(self.btn_new)
         tools1.addWidget(self.btn_del)
         tools1.addWidget(self.btn_all)
         tools1.addWidget(self.btn_none)
@@ -1411,14 +1734,25 @@ class BankPage(QWidget):
         html = (
             head
             + "<div style='color:#8fb6ff;font-size:12px;margin:12px 0 4px'>题目</div>"
-            + md_render.to_html(md_render.clean_text(it.get("q_text", "")))
+            + md_render.to_html(md_render.clean_text(it.get("q_text", "")),
+                                color="#e6e9ef", font_size=14)
             + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>答案</div>"
-            + md_render.to_html(ans or "（无）", color="#7ee787")
+            + md_render.to_html(ans or "（无）", color="#7ee787", font_size=15)
             + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>解析</div>"
-            + md_render.to_html(sol or "（无）")
+            + md_render.to_html(sol or "（无）", color="#e6e9ef", font_size=14)
         )
         self.view.setHtml(html)
         self.view.verticalScrollBar().setValue(0)
+
+    def edit_current(self):
+        row = self.list.currentRow()
+        if row < 0:
+            return
+        it = self.list.item(row).data(Qt.UserRole) or {}
+        EditQuestionDialog(self, item=it, on_saved=self.reload).exec_()
+
+    def new_question(self):
+        EditQuestionDialog(self, item=None, on_saved=self.reload).exec_()
 
     def copy_current(self):
         row = self.list.currentRow()
@@ -1434,6 +1768,8 @@ class BankPage(QWidget):
         if row < 0:
             return
         it = self.list.item(row).data(Qt.UserRole) or {}
+        if not ask_yes(self, "删除这条", "删掉这条题目？不可恢复。", ok_text="删除"):
+            return
         qbank.delete(it.get("id"))
         self.reload()
 
@@ -2390,14 +2726,39 @@ class MainWindow(QWidget):
         t.start()
 
     def _preview_overlay(self, opts):
-        """设置页拖滑块 → 答案窗实时预览。"""
+        """设置页拖滑块 → 答案窗实时预览，并自动落下配置（不用点保存）。"""
         demo = ("答案：**A**\n"
                 "解析：由 $I_a=\\frac{U}{R_a}$ 得 $I_a=\\frac{220}{0.5}=440A$，故选 A。\n"
-                "（预览效果，松开滑块 3 秒后自动收起）")
+                "（预览效果，松手 8 秒后自动收起）")
         try:
             self.overlay.preview(opts, demo)
         except Exception as e:
             print("preview failed:", e)
+        # 实时写入配置：拖完就已经生效并保存，关掉设置也不丢
+        self._pending_look = dict(opts or {})
+        t = getattr(self, "_look_t", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.setInterval(500)
+            t.timeout.connect(self._persist_look)
+            self._look_t = t
+        t.start()
+
+    def _persist_look(self):
+        opts = getattr(self, "_pending_look", None) or {}
+        if not opts:
+            return
+        try:
+            c = config_store.load()
+            for k, v in opts.items():
+                c[k] = v if isinstance(v, str) else int(v)
+            config_store.save(c)
+            self.cfg = c
+            self.overlay._override = {}
+            self.overlay.apply_settings()
+        except Exception as e:
+            print("persist look failed:", e)
 
     def _on_settings_saved(self, c):
         try:
