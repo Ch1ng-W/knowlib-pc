@@ -12,7 +12,8 @@ import traceback
 import ocr_ai  # noqa: F401  (顺序敏感)
 
 from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QObject, QTimer, QPoint, QRect, QSize,
-                          QEvent, QPropertyAnimation, QEasingCurve, QVariantAnimation)
+                          QEvent, QPropertyAnimation, QEasingCurve, QVariantAnimation,
+                          QAbstractAnimation)
 from PyQt5.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QIcon, QPixmap,
                          QTextCursor, QGuiApplication)
 from PyQt5.QtWidgets import (
@@ -1429,20 +1430,37 @@ class MainWindow(QWidget):
         return (content[0] + SHADOW_MARGIN * 2, content[1] + SHADOW_MARGIN * 2)
 
     def show_page(self, name, animate=True):
+        """带保护的切页入口：UI 出错也绝不把整个进程带崩。"""
+        try:
+            self._show_page(name, animate)
+        except Exception:
+            traceback.print_exc()
+            try:
+                self.add_log(f"切换页面出错：{name}")
+            except Exception:
+                pass
+
+    def _show_page(self, name, animate=True):
         page = {"home": self.page_home, "history": self.page_history,
                 "bank": self.page_bank, "settings": self.page_settings}.get(name)
         if page is None:
             return
         if self._page_name:
-            self._saved_sizes[self._page_name] = self.size()
+            # 切换中（动画未跑完）时存目标尺寸，避免存到中间态
+            if (self._page_anim is not None
+                    and self._page_anim.state() == QAbstractAnimation.Running):
+                end = self._page_anim.endValue()
+                self._saved_sizes[self._page_name] = (end.width(), end.height())
+            else:
+                self._saved_sizes[self._page_name] = (self.width(), self.height())
         self.stack.setCurrentWidget(page)
         self._page_name = name
         mw, mh = self._win_size(self.PAGE_MINS.get(name, (430, 404)))
         self.setMinimumSize(mw, mh)
-        w, h = self._saved_sizes.get(name) or self._win_size(
-            self.PAGE_SIZES.get(name, (470, 492)))
-        w = max(w, mw)
-        h = max(h, mh)
+        saved = self._saved_sizes.get(name)
+        if not saved:
+            saved = self._win_size(self.PAGE_SIZES.get(name, (470, 492)))
+        w, h = max(saved[0], mw), max(saved[1], mh)
         self._resize_to(w, h, page, animate and self._anim_on())
         if name == "history":
             self.page_history.reload()
