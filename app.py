@@ -727,8 +727,21 @@ class AnswerOverlay(QWidget):
         scr = QApplication.primaryScreen().availableGeometry()
         self.move(scr.right() - self.width() - 24, scr.top() + 90)
 
+    def overlaps(self, region=None):
+        """答案窗是否与监控区域相交（None / 无区域 = 一律当作要隐藏）。"""
+        try:
+            if not region or not region.get("width"):
+                return True
+            g = self.geometry()
+            r = QRect(int(region.get("left") or 0), int(region.get("top") or 0),
+                      int(region.get("width") or 0), int(region.get("height") or 0))
+            return g.intersects(r)
+        except Exception:
+            return True
+
     def place_avoiding(self, region):
         """尽量把答案窗放到监控区域之外，避免拍到自己造成闪。"""
+        region = region or {}
         scr = QApplication.primaryScreen().availableGeometry()
         w, h = self.width(), max(self.sizeHint().height(), 220)
         m = 10
