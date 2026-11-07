@@ -10,9 +10,11 @@
 import hashlib
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 import config_store
 import question_bank as qbank
@@ -108,6 +110,39 @@ def merge_history(remote_items):
         except Exception:
             return 0
     return len(add)
+
+
+def _device_info():
+    """本机标识（同一个同步码下用来区分设备）。"""
+    try:
+        cfg = config_store.load()
+    except Exception:
+        cfg = {}
+    did = str(cfg.get("device_id") or "").strip()
+    name = str(cfg.get("device_name") or "").strip()
+    changed = False
+    if not did:
+        did = "dev-" + uuid.uuid4().hex[:10]
+        cfg["device_id"] = did
+        changed = True
+    if not name:
+        try:
+            name = socket.gethostname() or "PC"
+        except Exception:
+            name = "PC"
+        cfg["device_name"] = name
+        changed = True
+    if changed:
+        try:
+            config_store.save(cfg)
+        except Exception:
+            pass
+    try:
+        import platform
+        osname = "Windows" if platform.system().lower().startswith("win") else platform.system()
+    except Exception:
+        osname = ""
+    return {"id": did, "name": name, "os": osname}
 
 
 # ---------------------------------------------------------------- 同步
