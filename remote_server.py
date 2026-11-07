@@ -12,6 +12,7 @@ PC 静默跑一个 HTTP 服务，手机浏览器打开就能：
 """
 import base64
 import ctypes
+import hashlib
 import ctypes.wintypes as wt
 import io
 import json
@@ -79,7 +80,8 @@ img.prev{width:100%;border-radius:10px;border:1px solid var(--line);display:bloc
     <select id="win" onchange="pick()"></select>
     <div class="row" style="margin-top:10px">
       <button class="ghost" onclick="refresh()">刷新窗口</button>
-      <button class="ghost" onclick="preview()">预览</button>
+      <button class="ghost" onclick="toggleAuto()" id="autoBtn">自动刷新：开</button>
+      <span id="pvState" class="tag">未预览</span>
     </div>
     <img id="prev" class="prev hide">
   </div>
@@ -136,17 +138,44 @@ function refresh(){
     });
     if(r.j.target){sel.value=String(r.j.target);}
     $('state').textContent='已连接';
+    if(PV_AUTO){ preview(); }
   }).catch(function(e){$('state').textContent='连接失败';});
 }
 function pick(){
-  api('/api/target',{method:'POST',body:JSON.stringify({win:$('win').value})}).then(function(){preview();});
+  api('/api/target',{method:'POST',body:JSON.stringify({win:$('win').value})}).then(function(){PV_HASH='';preview();});
 }
+var PV_TIMER=null, PV_HASH='', PV_AUTO=true;
+function toggleAuto(){
+  PV_AUTO=!PV_AUTO;
+  $('autoBtn').textContent='自动刷新：'+(PV_AUTO?'开':'关');
+  if(PV_AUTO){ preview(); } else { stopPv(); $('pvState').textContent='手动'; }
+}
+function stopPv(){ if(PV_TIMER){clearInterval(PV_TIMER);PV_TIMER=null;} }
 function preview(){
   var img=$('prev');
-  img.onerror=function(){ $('msg').textContent='预览失败（窗口可能已最小化/关闭）'; img.classList.add('hide'); };
-  img.onload=function(){ if(!img.naturalWidth){ $('msg').textContent='预览为空'; } };
-  img.src='/api/preview?t='+encodeURIComponent(T)+'&win='+encodeURIComponent($('win').value)+'&_='+Date.now();
   img.classList.remove('hide');
+  img.onerror=function(){ $('pvState').textContent='预览失败'; };
+  stopPv();
+  drawPv(true);
+  if(PV_AUTO){
+    PV_TIMER=setInterval(function(){
+      if(document.hidden) return;      // 切到后台就暂停，省电
+      drawPv(false);
+    }, 1500);
+  }
+}
+function drawPv(force){
+  var img=$('prev');
+  var win=$('win').value;
+  var u='/api/preview?json=1&t='+encodeURIComponent(T)+'&win='+encodeURIComponent(win);
+  if(!force && PV_HASH){ u+='&since='+encodeURIComponent(PV_HASH); }
+  fetch(u).then(function(r){return r.json();}).then(function(j){
+    if(!j.ok){ $('pvState').textContent='预览失败'; return; }
+    if(j.same){ $('pvState').textContent='实时'; return; }
+    PV_HASH=j.hash||'';
+    img.src=j.img;
+    $('pvState').textContent='实时 · '+new Date().toLocaleTimeString().slice(0,8);
+  }).catch(function(){ $('pvState').textContent='连接断开'; });
 }
 function ask(){
   $('go').disabled=true;$('msg').textContent='正在截图识别…';$('ansCard').classList.add('hide');
@@ -380,6 +409,15 @@ class _Handler(BaseHTTPRequestHandler):
                 raw = base64.b64decode(b64)
             except Exception:
                 raw = b""
+            # json=1：带哈希，页面可以「只在画面变了才刷新」
+            if qs.get("json", [""])[0] in ("1", "true"):
+                h = hashlib.md5(raw).hexdigest()[:12]
+                if qs.get("since", [""])[0] == h:
+                    self._json(200, {"ok": True, "same": True, "hash": h})
+                    return
+                self._json(200, {"ok": True, "same": False, "hash": h,
+                                 "img": "data:image/jpeg;base64," + b64})
+                return
             self._send(200, raw, "image/jpeg")
             return
         self._json(404, {"ok": False})

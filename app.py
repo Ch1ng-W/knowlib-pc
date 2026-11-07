@@ -35,6 +35,11 @@ import question_bank as qbank
 import remote_server
 import updater
 
+try:
+    import web_view
+except Exception:          # 没装 PyQtWebEngine / 资源缺失
+    web_view = None
+
 APP_TITLE = "Knowlib"
 
 # 窗口四周边距（现由系统 DWM 画阴影/圆角，不再自绘，所以为 0）
@@ -851,7 +856,7 @@ class SettingsPage(QWidget):
         self.subnav.setObjectName("subNav")
         self.subnav.setFixedWidth(168)
         self.subnav.setFocusPolicy(Qt.NoFocus)
-        self.subnav.addItems(["常规", "模型与密钥", "快捷键", "答案窗"])
+        self.subnav.addItems(["常规", "设备", "模型与密钥", "快捷键", "答案窗"])
         self.subnav.setCurrentRow(0)
         lay.addWidget(self.subnav)
 
@@ -860,6 +865,7 @@ class SettingsPage(QWidget):
         right.setSpacing(12)
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_general())
+        self.stack.addWidget(self._build_devices())
         self.stack.addWidget(self._build_model())
         self.stack.addWidget(self._build_hotkeys())
         self.stack.addWidget(self._build_overlay())
@@ -870,50 +876,12 @@ class SettingsPage(QWidget):
         self.subnav.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.provider.currentTextChanged.connect(self._on_provider)
 
-    # ---------------- 常规
-    def _build_general(self):
+    # ---------------- 设备（云同步 / 配对 / 设备管理）
+    def _build_devices(self):
         w = QWidget()
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(12)
-
-        card = QFrame()
-        card.setObjectName("card")
-        c = QVBoxLayout(card)
-        c.setContentsMargins(16, 14, 16, 14)
-        c.setSpacing(12)
-
-        t = QLabel("启动与关闭")
-        t.setObjectName("sectionTitle")
-        c.addWidget(t)
-
-        self.autostart = QCheckBox("开机自动启动（静默进托盘）")
-        self.autostart.setChecked(config_store.autostart_enabled())
-        c.addWidget(self.autostart)
-
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        lb = QLabel("关闭按钮")
-        lb.setMinimumWidth(96)
-        self.close_action = WinCombo()
-        self.close_action.addItem("最小化到托盘", "tray")
-        self.close_action.addItem("直接退出程序", "exit")
-        self.close_action.addItem("每次询问我", "ask")
-        i = self.close_action.findData(self.cfg.get("close_action", "tray"))
-        self.close_action.setCurrentIndex(i if i >= 0 else 0)
-        row.addWidget(lb)
-        row.addWidget(self.close_action, 1)
-        c.addLayout(row)
-
-        self.animations = QCheckBox("界面动画")
-        self.animations.setChecked(bool(self.cfg.get("animations", True)))
-        c.addWidget(self.animations)
-
-        self.check_update = QCheckBox("启动时检查更新")
-        self.check_update.setChecked(bool(self.cfg.get("check_update", True)))
-        c.addWidget(self.check_update)
-
-        v.addWidget(card)
 
         # ---------------- 云同步（跨端：PC / 手机 / 网页）
         card2 = QFrame()
@@ -986,6 +954,198 @@ class SettingsPage(QWidget):
         c2.addWidget(self.sync_auto)
 
         v.addWidget(card2)
+
+        # ---------------- 设备列表 + 设备详情（两栏各自独立滚动）
+        cardD = QFrame()
+        cardD.setObjectName("card")
+        cD = QVBoxLayout(cardD)
+        cD.setContentsMargins(16, 14, 16, 14)
+        cD.setSpacing(8)
+        tD = QLabel("设备")
+        tD.setObjectName("sectionTitle")
+        cD.addWidget(tD)
+        tipD = QLabel("同一个同步码下的设备都会出现在左边；点一台看它的详情和同步内容。"
+                      "左右两栏各自滚动，拖右边不会带着左边跑。")
+        tipD.setObjectName("sub")
+        tipD.setWordWrap(True)
+        cD.addWidget(tipD)
+
+        bodyD = QHBoxLayout()
+        bodyD.setSpacing(12)
+        self.dev_list = QListWidget()
+        self.dev_list.setFixedWidth(232)
+        self.dev_list.setMinimumHeight(180)
+        self.dev_list.currentRowChanged.connect(self.on_dev_pick)
+        bodyD.addWidget(self.dev_list, 0)
+
+        rD = QVBoxLayout()
+        rD.setSpacing(6)
+        self.dev_title = QLabel("还没同步过")
+        self.dev_title.setStyleSheet("font-size:14px;font-weight:600;")
+        rD.addWidget(self.dev_title)
+        self.dev_meta = QLabel("点一次「立即同步」，这里会列出这台设备的系统、标识、最近同步时间。")
+        self.dev_meta.setObjectName("sub")
+        self.dev_meta.setWordWrap(True)
+        rD.addWidget(self.dev_meta)
+
+        lb_items = QLabel("同步内容")
+        lb_items.setObjectName("sub")
+        rD.addWidget(lb_items)
+        self.dev_items = QListWidget()
+        self.dev_items.setMinimumHeight(120)
+        rD.addWidget(self.dev_items, 1)   # 自己带滚动条，不跟外层一起滚
+
+        rowD = QHBoxLayout()
+        rowD.setSpacing(8)
+        self.btn_dev_refresh = QPushButton("刷新")
+        self.btn_dev_refresh.setCursor(Qt.PointingHandCursor)
+        self.btn_dev_refresh.clicked.connect(self.refresh_devices)
+        self.btn_dev_mine = QPushButton("设为本机设备")
+        self.btn_dev_mine.setCursor(Qt.PointingHandCursor)
+        self.btn_dev_mine.clicked.connect(self.mark_dev_mine)
+        rowD.addWidget(self.btn_dev_refresh)
+        rowD.addWidget(self.btn_dev_mine)
+        rowD.addStretch(1)
+        rD.addLayout(rowD)
+        bodyD.addLayout(rD, 1)
+        cD.addLayout(bodyD, 1)
+
+        v.addWidget(cardD, 1)
+        return w
+
+    @safe_slot
+    def refresh_devices(self):
+        """把配置里登记的设备铺到左边列表，默认选中第一台。"""
+        cur = self.dev_list.currentRow()
+        self.dev_list.clear()
+        devs = sorted((self.cfg.get("sync_devices") or []),
+                      key=lambda x: x.get("ts") or 0, reverse=True)
+        mine = set(self.cfg.get("sync_mine") or [])
+        if not devs:
+            it = QListWidgetItem("（还没有设备）先点上面的「立即同步」")
+            it.setFlags(Qt.NoItemFlags)
+            self.dev_list.addItem(it)
+            self.dev_title.setText("还没同步过")
+            self.dev_meta.setText("同步一次后，云端登记的设备会出现在这里。")
+            self.dev_items.clear()
+            return
+        for d in devs:
+            did = d.get("id") or ""
+            name = d.get("name") or did or "未命名设备"
+            tag = " · 我的" if did in mine else ""
+            it = QListWidgetItem(name + tag)
+            it.setData(Qt.UserRole, d)
+            self.dev_list.addItem(it)
+        self.dev_list.setCurrentRow(min(max(cur, 0), self.dev_list.count() - 1))
+
+    @safe_slot
+    def on_dev_pick(self, row):
+        if row < 0:
+            return
+        it = self.dev_list.item(row)
+        d = it.data(Qt.UserRole) if it else None
+        if not d:
+            return
+        did = d.get("id") or ""
+        mine = set(self.cfg.get("sync_mine") or [])
+        ts = d.get("ts") or 0
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts / 1000.0)) if ts else "未知"
+        self.dev_title.setText(d.get("name") or did or "未命名设备")
+        self.dev_meta.setText("系统：%s\n标识：%s\n最近同步：%s\n%s"
+                              % (d.get("os") or "未知", did or "-", when,
+                                 "已标记为「我的设备」" if did in mine else "不是「我的设备」"))
+
+        # 同步内容（本机口径，能算的都算出来）
+        self.dev_items.clear()
+        rows = []
+        try:
+            import question_bank as _qb
+            st = _qb.stats() or {}
+            n = st.get("total") or st.get("count") or 0
+            rows.append("题库：%s 题" % n)
+        except Exception:
+            rows.append("题库：-")
+        try:
+            import cloud_sync as _cs
+            rows.append("搜题记录：%d 条" % len(_cs.local_history()))
+        except Exception:
+            rows.append("搜题记录：-")
+        try:
+            rows.append("组卷试卷：%d 份" % len(self.cfg.get("papers") or []))
+        except Exception:
+            rows.append("组卷试卷：-")
+        for t in rows:
+            self.dev_items.addItem(QListWidgetItem(t))
+
+    @safe_slot
+    def mark_dev_mine(self):
+        row = self.dev_list.currentRow()
+        if row < 0:
+            return
+        it = self.dev_list.item(row)
+        d = it.data(Qt.UserRole) if it else None
+        if not d:
+            return
+        did = d.get("id") or ""
+        mine = list(self.cfg.get("sync_mine") or [])
+        if did in mine:
+            mine.remove(did)
+        else:
+            mine.append(did)
+        self.cfg["sync_mine"] = mine
+        config_store.save(self.cfg)
+        self.refresh_devices()
+        self.on_dev_pick(row)
+
+    # ---------------- 常规
+    def _build_general(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
+
+        card = QFrame()
+        card.setObjectName("card")
+        c = QVBoxLayout(card)
+        c.setContentsMargins(16, 14, 16, 14)
+        c.setSpacing(12)
+
+        t = QLabel("启动与关闭")
+        t.setObjectName("sectionTitle")
+        c.addWidget(t)
+
+        self.autostart = QCheckBox("开机自动启动（静默进托盘）")
+        self.autostart.setChecked(config_store.autostart_enabled())
+        c.addWidget(self.autostart)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        lb = QLabel("关闭按钮")
+        lb.setMinimumWidth(96)
+        self.close_action = WinCombo()
+        self.close_action.addItem("最小化到托盘", "tray")
+        self.close_action.addItem("直接退出程序", "exit")
+        self.close_action.addItem("每次询问我", "ask")
+        i = self.close_action.findData(self.cfg.get("close_action", "tray"))
+        self.close_action.setCurrentIndex(i if i >= 0 else 0)
+        row.addWidget(lb)
+        row.addWidget(self.close_action, 1)
+        c.addLayout(row)
+
+        self.animations = QCheckBox("界面动画")
+        self.animations.setChecked(bool(self.cfg.get("animations", True)))
+        c.addWidget(self.animations)
+
+        self.check_update = QCheckBox("启动时检查更新")
+        self.check_update.setChecked(bool(self.cfg.get("check_update", True)))
+        c.addWidget(self.check_update)
+
+        v.addWidget(card)
+
+        # ---------------- 云同步已挪到「设备」页
+        hint2 = QLabel("云同步 / 设备配对 / 设备管理 → 左侧「设备」")
+        hint2.setObjectName("sub")
+        v.addWidget(hint2)
 
         # ---------------- 手机遥控搜题
         card3 = QFrame()
@@ -2359,23 +2519,31 @@ class OnlinePage(QWidget):
         self.tip.setWordWrap(True)
         lay.addWidget(self.tip)
 
+        # 有 QtWebEngine 就跑网页版答题页（KaTeX 真公式），否则退回老富文本
+        self.use_web = bool(web_view and web_view.web_available())
+
         body = QHBoxLayout()
         body.setSpacing(12)
-        self.list = QListWidget()
-        self.list.setFixedWidth(240)
-        self.list.setUniformItemSizes(True)
-        self.list.currentRowChanged.connect(self.show_item)
-        body.addWidget(self.list)
-
         right = QVBoxLayout()
         right.setSpacing(8)
-        self.view = QTextBrowser()
-        self.view.setOpenLinks(False)
-        self.view.anchorClicked.connect(self._on_anchor)
-        right.addWidget(self.view, 3)
-        self.ans = QTextBrowser()
-        self.ans.setVisible(False)
-        right.addWidget(self.ans, 2)
+        self.list = None
+        self.ans = None
+        if self.use_web:
+            self.view = web_view.QuizView(self)
+            body.addWidget(self.view, 1)
+        else:
+            self.list = QListWidget()
+            self.list.setFixedWidth(240)
+            self.list.setUniformItemSizes(True)
+            self.list.currentRowChanged.connect(self.show_item)
+            body.addWidget(self.list)
+            self.view = QTextBrowser()
+            self.view.setOpenLinks(False)
+            self.view.anchorClicked.connect(self._on_anchor)
+            right.addWidget(self.view, 3)
+            self.ans = QTextBrowser()
+            self.ans.setVisible(False)
+            right.addWidget(self.ans, 2)
 
         # 填空/简答：自己写答案 → AI 判分
         self.grade_row = QHBoxLayout()
@@ -2391,7 +2559,8 @@ class OnlinePage(QWidget):
         self.grade_hint = QLabel("")
         self.grade_hint.setObjectName("sub")
         self.grade_row.addWidget(self.grade_hint)
-        right.addLayout(self.grade_row)
+        if not self.use_web:
+            right.addLayout(self.grade_row)
 
         tools = QHBoxLayout()
         tools.setSpacing(8)
@@ -2402,7 +2571,9 @@ class OnlinePage(QWidget):
         self.btn_save.clicked.connect(self.save_current)
         self.btn_save_all = QPushButton("收藏整卷")
         self.btn_save_all.clicked.connect(self.save_all)
-        for b in (self.btn_show, self.btn_save, self.btn_save_all):
+        show_list = [self.btn_save, self.btn_save_all] if self.use_web else [
+            self.btn_show, self.btn_save, self.btn_save_all]
+        for b in show_list:
             b.setCursor(Qt.PointingHandCursor)
             b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + 28)
             tools.addWidget(b)
@@ -2418,7 +2589,7 @@ class OnlinePage(QWidget):
 
     # ---------------- 状态
     def _empty(self):
-        self.view.setHtml("<div style='color:#7f8896;padding:24px'>"
+        self.view.setHtml("<div style='color:#7f8896;padding:24px;font-family:sans-serif'>"
                            "还没有打开试卷。把同学发你的链接粘到上面，点「打开」。</div>")
 
     def load_code(self, code):
@@ -2454,7 +2625,8 @@ class OnlinePage(QWidget):
         self.picked = {}
         self.saved = set()
         self._answer_open = False
-        self.ans.setVisible(False)
+        if self.ans is not None:
+            self.ans.setVisible(False)
         title = (self.doc.get("title") or "在线试卷").strip()
         if not self.qs:
             self.tip.setText("这份试卷是空的")
@@ -2462,6 +2634,13 @@ class OnlinePage(QWidget):
             return
         total = sum(float(q.get("score") or 0) for q in self.qs)
         self.tip.setText("《%s》· %d 题 · 共 %g 分" % (title, len(self.qs), total))
+        if self.use_web:
+            try:
+                web_view.load_paper(self.view, self.doc)
+            except Exception as e:
+                self.tip.setText("渲染失败：%s" % e)
+            self.stat.setText("已收藏 0 / %d" % len(self.qs))
+            return
         self.list.clear()
         for i, q in enumerate(self.qs):
             it = QListWidgetItem("%d. %s" % (i + 1, q.get("type_name") or "题目"))
@@ -2471,6 +2650,9 @@ class OnlinePage(QWidget):
         self.list.setCurrentRow(0)
 
     def _refresh_marks(self):
+        if self.list is None:
+            self.stat.setText("已收藏 %d / %d" % (len(self.saved), len(self.qs)))
+            return
         for i in range(self.list.count()):
             it = self.list.item(i)
             q = self.qs[it.data(Qt.UserRole)] if it.data(Qt.UserRole) is not None else None
@@ -2624,6 +2806,9 @@ class OnlinePage(QWidget):
         return bool(ok)
 
     def save_current(self):
+        if self.use_web:
+            web_view.current_index(self.view, self._save_at)
+            return
         if self.row < 0:
             return
         if self.row in self.saved:
@@ -2636,6 +2821,26 @@ class OnlinePage(QWidget):
         else:
             self.stat.setText("收藏失败（题库写入出错）")
 
+    @safe_slot
+    def _save_at(self, i):
+        """网页模式下：拿到当前题号再收藏。"""
+        try:
+            i = int(i)
+        except Exception:
+            i = -1
+        if i < 0 or i >= len(self.qs):
+            self.stat.setText("先在右边选一道题再收藏")
+            return
+        self.row = i
+        if i in self.saved:
+            self.stat.setText("这道题已经在题库里了")
+            return
+        if self._save_one(i):
+            self._refresh_marks()
+            self.stat.setText("已收藏第 %d 题 ✓（题库里可编辑）" % (i + 1))
+        else:
+            self.stat.setText("收藏失败（题库写入出错）")
+
     def save_all(self):
         if not self.qs:
             return
@@ -2644,7 +2849,7 @@ class OnlinePage(QWidget):
             if i not in self.saved and self._save_one(i):
                 n += 1
         self._refresh_marks()
-        if self.row >= 0:
+        if not self.use_web and self.row >= 0:
             self._render()
         self.stat.setText("已收藏 %d 题 ✓" % n if n else "都已收藏过了")
 
