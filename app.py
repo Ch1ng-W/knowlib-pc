@@ -297,12 +297,30 @@ def _err_log_path():
 
 def safe_slot(fn):
     """包住 Qt 槽函数：PyQt5 里槽里抛未捕获异常会直接 abort（0xc0000409），
-    包一层就能把 traceback 写进 error.log，并且不让软件闪退。"""
+    包一层就能把 traceback 写进 error.log，并且不让软件闪退。
+
+    另外兼容 `clicked(bool)` 这类会多传一个参数的信号：按函数签名裁掉多余实参。
+    """
     import functools
+    import inspect
+
+    try:
+        _sig = inspect.signature(fn)
+        _npos = 0
+        for _p in _sig.parameters.values():
+            if _p.kind in (_p.POSITIONAL_ONLY, _p.POSITIONAL_OR_KEYWORD):
+                _npos += 1
+            elif _p.kind is _p.VAR_POSITIONAL:
+                _npos = 99
+                break
+    except Exception:
+        _npos = 99
 
     @functools.wraps(fn)
     def _wrapped(*a, **k):
         try:
+            if _npos != 99 and len(a) > _npos:
+                a = a[:_npos]
             return fn(*a, **k)
         except Exception:
             p = _err_log_path()
@@ -2038,6 +2056,166 @@ class EditQuestionDialog(QDialog):
         self.accept()
 
 
+class _DashFetch(QThread):
+    """拉取试卷后台数据。"""
+
+    ok = pyqtSignal(object)
+    bad = pyqtSignal(str)
+
+    def __init__(self, code, key, parent=None):
+        super().__init__(parent)
+        self.code = code
+        self.key = key
+
+    def run(self):
+        import json as _json
+        import urllib.parse as _up
+        import urllib.request as _ur
+        try:
+            u = "https://knowlib.fun/api/dash?code=%s&key=%s" % (
+                _up.quote(self.code or ""), _up.quote(self.key or ""))
+            with _ur.urlopen(u, timeout=20) as r:
+                self.ok.emit(_json.loads(r.read().decode("utf-8", "replace")))
+        except Exception as e:
+            code = getattr(e, "code", None)
+            if code == 403:
+                self.bad.emit("作者密钥不对")
+            else:
+                self.bad.emit("%s: %s" % (type(e).__name__, e))
+
+
+class DashDialog(QDialog):
+    """试卷后台（PC 内直接看，不用开浏览器）。"""
+
+    def __init__(self, parent, code, key, title=""):
+        super().__init__(parent)
+        self.code = code
+        self.key = key
+        self.setWindowTitle("试卷后台" + ((" · " + title) if title else ""))
+        self.resize(860, 640)
+        self._th = None
+        c = theme_colors(getattr(parent, "theme", LIGHT))
+        self._c = c
+
+        v = QVBoxLayout(self)
+        head = QHBoxLayout()
+        self.lbl = QLabel("加载中…")
+        self.lbl.setObjectName("sub")
+        head.addWidget(self.lbl, 1)
+        self.chk = QCheckBox("自动刷新（20 秒）")
+        self.chk.setChecked(True)
+        self.chk.toggled.connect(self._toggle_timer)
+        head.addWidget(self.chk)
+        self.btn = QPushButton("刷新")
+        self.btn.clicked.connect(self.reload)
+        head.addWidget(self.btn)
+        v.addLayout(head)
+
+        self.view = QTextBrowser()
+        v.addWidget(self.view, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        bweb = QPushButton("在浏览器打开")
+        bweb.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl("https://knowlib.fun/dash.html?code=%s&key=%s" % (code, key))))
+        bok = QPushButton("关闭")
+        bok.clicked.connect(self.accept)
+        row.addWidget(bweb)
+        row.addWidget(bok)
+        v.addLayout(row)
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(20000)
+        self.timer.timeout.connect(self.reload)
+        self.timer.start()
+        self.reload()
+
+    def _toggle_timer(self, on):
+        if on:
+            self.timer.start()
+        else:
+            self.timer.stop()
+
+    def reload(self):
+        if self._th is not None and self._th.isRunning():
+            return
+        self.btn.setEnabled(False)
+        th = _DashFetch(self.code, self.key, self)
+        th.ok.connect(self._on_data)
+        th.bad.connect(self._on_err)
+        self._th = th
+        th.start()
+
+    @safe_slot
+    def _on_err(self, msg):
+        self.btn.setEnabled(True)
+        self.lbl.setText("加载失败：" + msg)
+
+    @safe_slot
+    def _on_data(self, j):
+        self.btn.setEnabled(True)
+        if not j.get("ok"):
+            self.lbl.setText("加载失败" if j.get("message") != "no doc" else "找不到这份试卷")
+            return
+        c = self._c
+        s = j.get("summary") or {}
+        self.lbl.setText("《%s》 共 %s 题 · 浏览 %s · 作答 %s 人 / %s 次" % (
+            j.get("title") or "", j.get("questions") or 0, s.get("views") or 0,
+            s.get("users") or 0, s.get("attempts") or 0))
+
+        def fmt(ts):
+            if not ts:
+                return "-"
+            return time.strftime("%m-%d %H:%M", time.localtime(ts / 1000.0))
+
+        def dur(sec):
+            sec = int(sec or 0)
+            if sec <= 0:
+                return "-"
+            if sec < 60:
+                return "%d 秒" % sec
+            return "%d 分 %d 秒" % (sec // 60, sec % 60)
+
+        cards = [("浏览量", s.get("views") or 0), ("访客", s.get("visitors") or 0),
+                 ("作答人数", s.get("users") or 0), ("作答次数", s.get("attempts") or 0),
+                 ("平均分", "%s / %s" % (s.get("avgScore") or 0, j.get("total") or "-")),
+                 ("平均用时", dur(s.get("avgDur")))]
+        html = ["<div style='font-family:Microsoft YaHei UI;color:%s'>" % c["text"]]
+        html.append("<table cellspacing=6><tr>")
+        for k, val in cards:
+            html.append("<td style='padding:8px 14px;border:1px solid %s;border-radius:8px'>"
+                        "<div style='font-size:11px;color:%s'>%s</div>"
+                        "<div style='font-size:18px;font-weight:700'>%s</div></td>" % ("#d9d9d9", c["muted"], k, val))
+        html.append("</tr></table>")
+
+        html.append("<h3 style='font-size:14px;margin:14px 0 6px'>作答的人</h3>")
+        html.append("<table width='100%' cellspacing=0 cellpadding=6 border=0>")
+        html.append("<tr style='color:%s;font-size:11px'><td>设备</td><td>次数</td><td>首次</td>"
+                    "<td>最近</td><td>平均分</td><td>最高</td><td>平均用时</td></tr>" % c["muted"])
+        for u in (j.get("users") or []):
+            tag = " <span style='color:#d9534f'>(已排除)</span>" if u.get("ex") else ""
+            html.append("<tr style='border-top:1px solid #eee'><td>%s<br><span style='font-size:11px;color:%s'>%s</span>%s</td>"
+                        "<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                            u.get("uid") or "-", c["muted"], u.get("device") or "", tag,
+                            u.get("count") or 0, fmt(u.get("first")), fmt(u.get("last")),
+                            u.get("avg") or 0, u.get("best") or 0, dur(u.get("avgDur"))))
+        if not (j.get("users") or []):
+            html.append("<tr><td colspan=7 style='color:%s'>还没有人作答</td></tr>" % c["muted"])
+        html.append("</table>")
+
+        html.append("<h3 style='font-size:14px;margin:14px 0 6px'>最近作答</h3>")
+        html.append("<table width='100%' cellspacing=0 cellpadding=6>")
+        html.append("<tr style='color:%s;font-size:11px'><td>时间</td><td>设备</td><td>得分</td><td>用时</td></tr>" % c["muted"])
+        for a in (j.get("recent") or [])[:30]:
+            html.append("<tr style='border-top:1px solid #eee'><td>%s</td><td>%s</td><td>%s / %s</td><td>%s</td></tr>" % (
+                fmt(a.get("t")), a.get("d") or "-", a.get("score") or 0,
+                a.get("total") or j.get("total") or "-", dur(a.get("dur"))))
+        html.append("</table>")
+        html.append("<div style='margin-top:12px;font-size:11px;color:%s'>"
+                    "想把自己测的设备排除？在浏览器后台里点该行的「排除」。</div></div>" % c["muted"])
+        self.view.setHtml("".join(html))
+
+
 class _OnlineFetch(QThread):
     """后台拉取在线试卷，避免卡 UI。"""
 
@@ -2840,7 +3018,7 @@ class BankPage(QWidget):
         lw = QListWidget()
         for code, info in rows:
             it = QListWidgetItem("《%s》 %s" % (info.get("title") or "未命名", code))
-            it.setData(Qt.UserRole, (code, info.get("key") or ""))
+            it.setData(Qt.UserRole, (code, info.get("key") or "", info.get("title") or ""))
             lw.addItem(it)
         v.addWidget(lw, 1)
         row = QHBoxLayout()
@@ -2855,15 +3033,20 @@ class BankPage(QWidget):
 
         def _sel():
             it = lw.currentItem()
-            return it.data(Qt.UserRole) if it else ("", "")
+            return it.data(Qt.UserRole) if it else ("", "", "")
 
-        bopen.clicked.connect(lambda: (
-            QDesktopServices.openUrl(QUrl(online_quiz.BASE + "/dash.html#" + _sel()[0]))))
+        def _open_selected():
+            code, key, title = _sel()
+            if not code:
+                return
+            DashDialog(self, code, key, title).exec_()
+
+        bopen.clicked.connect(_open_selected)
         bkey.clicked.connect(lambda: (
             QApplication.clipboard().setText(_sel()[1]),
             self.stat.setText("密钥已复制")))
         bok.clicked.connect(dlg.accept)
-        lw.itemDoubleClicked.connect(lambda _i: bopen.click())
+        lw.itemDoubleClicked.connect(lambda _i: _open_selected())
         if lw.count():
             lw.setCurrentRow(0)
         dlg.exec_()
@@ -3488,6 +3671,7 @@ class MainWindow(QWidget):
         side = QWidget()
         side.setObjectName("sidebar")
         side.setFixedWidth(196)
+        self.side = side
         sl = QVBoxLayout(side)
         sl.setContentsMargins(10, 14, 10, 10)
         sl.setSpacing(2)
@@ -3495,7 +3679,8 @@ class MainWindow(QWidget):
         sl.addSpacing(6)
 
         self.nav = {}
-        for key, icon, text in (("home", "\ue80f", "答题"),
+        self._nav_text = {}
+        for key, icon, text in (("home", "\ue721", "答题"),
                                 ("online", "\ue774", "在线试卷"),
                                 ("history", "\ue81c", "历史记录"),
                                 ("bank", "\ue8f1", "题库"),
@@ -3511,6 +3696,7 @@ class MainWindow(QWidget):
             b.clicked.connect(lambda _=False, k=key: self.show_page(k))
             sl.addWidget(b)
             self.nav[key] = b
+            self._nav_text[key] = text
 
         sl.addStretch(1)
         self.btn_collapse = QPushButton("收起主界面")
@@ -3528,9 +3714,9 @@ class MainWindow(QWidget):
         self.btn_update.setVisible(False)
         self.btn_update.clicked.connect(self.start_update)
         sl.addWidget(self.btn_update)
-        ver = QLabel(f"v{config_store.APP_VERSION}")
-        ver.setObjectName("verLabel")
-        sl.addWidget(ver)
+        self.ver_label = QLabel(f"v{config_store.APP_VERSION}")
+        self.ver_label.setObjectName("verLabel")
+        sl.addWidget(self.ver_label)
         root.addWidget(side)
 
         # ---- 内容区
@@ -4331,11 +4517,26 @@ class MainWindow(QWidget):
 
     @safe_slot
     def collapse_main(self):
-        """收起：隐藏主界面（不动历史列表），只留答案窗 + 托盘图标。"""
-        self.hide()
-        if self.tray:
-            self.tray.showMessage("Knowlib", "主界面已收起，点托盘图标可恢复",
-                                  QSystemTrayIcon.Information, 2500)
+        """收起左侧导航：只留图标（再点一次展开）。"""
+        self._side_collapsed = not getattr(self, "_side_collapsed", False)
+        try:
+            self.side.setFixedWidth(58 if self._side_collapsed else 196)
+        except Exception:
+            pass
+        for k, b in self.nav.items():
+            b.setText("" if self._side_collapsed else self._nav_text.get(k, ""))
+            b.setToolTip(self._nav_text.get(k, ""))
+            b.setStyleSheet("QPushButton#navItem{text-align:center;padding:8px 0;}" if self._side_collapsed else "")
+        self.btn_collapse.setText("»" if self._side_collapsed else "收起主界面")
+        self.btn_collapse.setToolTip("展开左侧导航" if self._side_collapsed else "收起左侧导航（只留图标）")
+        try:
+            self.btn_update.setText("" if self._side_collapsed else "发现新版本")
+        except Exception:
+            pass
+        try:
+            self.ver_label.setVisible(not self._side_collapsed)
+        except Exception:
+            pass
 
     @safe_slot
     def open_online(self, code):
