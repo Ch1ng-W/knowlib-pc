@@ -8,6 +8,7 @@ import shutil
 import ctypes
 import ctypes.wintypes  # noqa: F401
 import hashlib
+import html as _html
 import traceback
 
 # ⚠️ 先导入 OCR（onnxruntime），再导入 PyQt5，否则会 0xC0000005 崩溃
@@ -29,6 +30,7 @@ from PyQt5.QtWidgets import (
 
 import config_store
 import md_render
+import online_quiz
 import question_bank as qbank
 import updater
 
@@ -1346,6 +1348,7 @@ class HistoryPage(QWidget):
         self._on_back = on_back
         self.setObjectName("historyPage")
         self.setStyleSheet("")
+        self._c = theme_colors(getattr(parent, "theme", LIGHT))
 
         self.items = []
         self.sel = set()          # 已勾选的 key
@@ -1539,12 +1542,12 @@ class HistoryPage(QWidget):
         cost = it.get("cost")
         cost_s = f" · {cost}s" if isinstance(cost, (int, float)) else ""
         html = (
-            f"<div style='color:#7f8896;font-size:12px'>"
+            f"<div style='color:{self._c['muted']};font-size:12px'>"
             f"{self._esc(it.get('t', ''))}{cost_s}</div>"
-            f"<div style='color:#8fb6ff;font-size:12px;margin:12px 0 4px'>题目</div>"
-            + md_render.to_html(q, color="#e6e9ef", font_size=14)
-            + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>答案与解析</div>"
-            + md_render.to_html(a, color="#e6e9ef", font_size=14)
+            f"<div style='color:{self._c['accent']};font-size:12px;margin:12px 0 4px'>题目</div>"
+            + md_render.to_html(q, color=self._c["text"], font_size=14)
+            + f"<div style='color:{self._c['accent']};font-size:12px;margin:14px 0 4px'>答案与解析</div>"
+            + md_render.to_html(a, color=self._c["text"], font_size=14)
         )
         self.view.setHtml(html)
         sb = self.view.verticalScrollBar()
@@ -1735,6 +1738,289 @@ class EditQuestionDialog(QDialog):
         self.accept()
 
 
+class _OnlineFetch(QThread):
+    """后台拉取在线试卷，避免卡 UI。"""
+
+    ok = pyqtSignal(object, object)
+    bad = pyqtSignal(str)
+
+    def __init__(self, code, parent=None):
+        super().__init__(parent)
+        self.code = code
+
+    def run(self):
+        try:
+            doc, _meta = online_quiz.fetch(self.code)
+            self.ok.emit(doc, online_quiz.normalize(doc))
+        except Exception as e:
+            self.bad.emit(str(e) or e.__class__.__name__)
+
+
+class OnlinePage(QWidget):
+    """在线试卷：粘分享链接 → 在 PC 里做题 → 一键收藏进本地题库。"""
+
+    def __init__(self, parent=None, on_back=None):
+        super().__init__(parent)
+        self._on_back = on_back
+        self.setObjectName("onlinePage")
+        self.setStyleSheet("")
+        self._c = theme_colors(getattr(parent, "theme", LIGHT))
+        self.doc = {}
+        self.qs = []
+        self.row = -1
+        self.picked = {}          # 题号 -> 选过的 key
+        self.saved = set()        # 已收藏的题号
+        self._th = None
+        self._answer_open = False
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+
+        t = QLabel("在线试卷")
+        t.setObjectName("pageTitle")
+        lay.addWidget(t)
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+        self.link = QLineEdit()
+        self.link.setPlaceholderText(
+            "粘贴分享链接：https://knowlib.fun/s/xxxxxx 或 knowlib://s/xxxxxx")
+        self.link.returnPressed.connect(self.open_link)
+        self.btn_open = QPushButton("打开")
+        self.btn_open.setObjectName("primary")
+        self.btn_open.setMinimumWidth(84)
+        self.btn_open.clicked.connect(self.open_link)
+        row1.addWidget(self.link, 1)
+        row1.addWidget(self.btn_open)
+        lay.addLayout(row1)
+
+        self.tip = QLabel("打开后可直接在 PC 里做题；点「收藏本题」存进本地题库，题库里能编辑、能组卷")
+        self.tip.setObjectName("sub")
+        self.tip.setWordWrap(True)
+        lay.addWidget(self.tip)
+
+        body = QHBoxLayout()
+        body.setSpacing(12)
+        self.list = QListWidget()
+        self.list.setFixedWidth(240)
+        self.list.setUniformItemSizes(True)
+        self.list.currentRowChanged.connect(self.show_item)
+        body.addWidget(self.list)
+
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        self.view = QTextBrowser()
+        self.view.setOpenLinks(False)
+        self.view.anchorClicked.connect(self._on_anchor)
+        right.addWidget(self.view, 3)
+        self.ans = QTextBrowser()
+        self.ans.setVisible(False)
+        right.addWidget(self.ans, 2)
+
+        tools = QHBoxLayout()
+        tools.setSpacing(8)
+        self.btn_show = QPushButton("显示答案")
+        self.btn_show.clicked.connect(self.toggle_answer)
+        self.btn_save = QPushButton("收藏本题")
+        self.btn_save.setObjectName("primary")
+        self.btn_save.clicked.connect(self.save_current)
+        self.btn_save_all = QPushButton("收藏整卷")
+        self.btn_save_all.clicked.connect(self.save_all)
+        for b in (self.btn_show, self.btn_save, self.btn_save_all):
+            b.setCursor(Qt.PointingHandCursor)
+            b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + 28)
+            tools.addWidget(b)
+        tools.addStretch(1)
+        self.stat = QLabel("")
+        self.stat.setObjectName("sub")
+        tools.addWidget(self.stat)
+        right.addLayout(tools)
+        body.addLayout(right, 1)
+        lay.addLayout(body, 1)
+
+        self._empty()
+
+    # ---------------- 状态
+    def _empty(self):
+        self.view.setHtml("<div style='color:#7f8896;padding:24px'>"
+                           "还没有打开试卷。把同学发你的链接粘到上面，点「打开」。</div>")
+
+    def load_code(self, code):
+        code = (code or "").strip()
+        if code:
+            self.link.setText(code)
+            self.open_link()
+
+    def open_link(self):
+        code = online_quiz.code_from(self.link.text())
+        if not code:
+            self.tip.setText("链接里没找到试卷 code（应该是 …/s/xxxxxx 这种）")
+            return
+        self.tip.setText("正在拉取试卷…")
+        self.btn_open.setEnabled(False)
+        th = _OnlineFetch(code, self)
+        th.ok.connect(self._on_doc)
+        th.bad.connect(self._on_err)
+        self._th = th
+        th.start()
+
+    @safe_slot
+    def _on_err(self, msg):
+        self.btn_open.setEnabled(True)
+        self.tip.setText("打开失败：" + msg)
+
+    @safe_slot
+    def _on_doc(self, doc, qs):
+        self.btn_open.setEnabled(True)
+        self.doc = doc or {}
+        self.qs = qs or []
+        self.row = -1
+        self.picked = {}
+        self.saved = set()
+        self._answer_open = False
+        self.ans.setVisible(False)
+        title = (self.doc.get("title") or "在线试卷").strip()
+        if not self.qs:
+            self.tip.setText("这份试卷是空的")
+            self._empty()
+            return
+        total = sum(float(q.get("score") or 0) for q in self.qs)
+        self.tip.setText("《%s》· %d 题 · 共 %g 分" % (title, len(self.qs), total))
+        self.list.clear()
+        for i, q in enumerate(self.qs):
+            it = QListWidgetItem("%d. %s" % (i + 1, q.get("type_name") or "题目"))
+            it.setData(Qt.UserRole, i)
+            self.list.addItem(it)
+        self._refresh_marks()
+        self.list.setCurrentRow(0)
+
+    def _refresh_marks(self):
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            q = self.qs[it.data(Qt.UserRole)] if it.data(Qt.UserRole) is not None else None
+            if q is None:
+                continue
+            star = " ★" if i in self.saved else ""
+            it.setText("%d. %s%s" % (i + 1, q.get("type_name") or "题目", star))
+        self.stat.setText("已收藏 %d / %d" % (len(self.saved), len(self.qs)))
+
+    # ---------------- 答题
+    def show_item(self, row):
+        if row < 0 or row >= len(self.qs):
+            return
+        self.row = row
+        self._answer_open = False
+        self.ans.setVisible(False)
+        self._render()
+
+    def _render(self):
+        q = self.qs[self.row]
+        parts = []
+        parts.append("<div style='color:%s;font-size:12px;margin-bottom:8px'>第 %d 题 · %s · %g 分</div>"
+                     % (self._c["accent"], self.row + 1, q.get("type_name") or "",
+                        float(q.get("score") or 0)))
+        parts.append(md_render.to_html(q.get("stem") or "", color=self._c["text"], font_size=15))
+        opts = q.get("options") or []
+        if q.get("type") == "judge" and not opts:
+            opts = [("对", "正确"), ("错", "错误")]
+        if opts:
+            pick = self.picked.get(self.row)
+            right = online_quiz.correct_key(q)
+            rows = []
+            for k, txt in opts:
+                bg, bd = "transparent", "#30363d"
+                if pick == k:
+                    ok = (k == right)
+                    bg = "rgba(46,160,67,0.18)" if ok else "rgba(217,83,79,0.18)"
+                    bd = "#2ea043" if ok else "#d9534f"
+                elif pick and right and k == right:
+                    bd = "#2ea043"
+                rows.append(
+                    "<div style='margin:6px 0;padding:8px 10px;border:1px solid %s;"
+                    "background:%s;border-radius:6px'>"
+                    "<a href='pick:%s' style='color:%s;text-decoration:none'>%s．%s</a></div>"
+                    % (bd, bg, k, self._c["text"], k, _html.escape(txt)))
+            parts.append("".join(rows))
+        if self.row in self.saved:
+            parts.append("<div style='color:%s;font-size:12px;margin-top:10px'>★ 已收藏到本地题库</div>"
+                         % self._c["answer"])
+        self.view.setHtml("".join(parts))
+
+    @safe_slot
+    def _on_anchor(self, url):
+        s = url.toString()
+        m = re.search(r"pick:([A-Za-z\u4e00-\u9fff])", s)
+        if not m or self.row < 0:
+            return
+        key = m.group(1).upper() if m.group(1).isascii() else m.group(1)
+        self.picked[self.row] = key
+        self._render()
+        self._answer_open = True
+        self.ans.setVisible(True)
+        self._render_answer()
+
+    def toggle_answer(self):
+        self._answer_open = not self._answer_open
+        self.ans.setVisible(self._answer_open)
+        if self._answer_open:
+            self._render_answer()
+
+    def _render_answer(self):
+        if self.row < 0:
+            return
+        q = self.qs[self.row]
+        ans = (q.get("answer") or "").strip() or "（这道题没给答案）"
+        sol = (q.get("analysis") or "").strip()
+        html = ("<div style='color:%s;font-size:12px;margin-bottom:4px'>答案</div>" % self._c["accent"]
+                + md_render.to_html(ans, color=self._c["answer"], font_size=17))
+        if sol:
+            html += ("<div style='color:%s;font-size:12px;margin:12px 0 4px'>解析</div>" % self._c["accent"]
+                     + md_render.to_html(sol, color=self._c["text"], font_size=14))
+        self.ans.setHtml(html)
+        self.ans.verticalScrollBar().setValue(0)
+
+    # ---------------- 收藏
+    def _save_one(self, i):
+        q = self.qs[i]
+        stem = (q.get("stem") or "").strip()
+        if not stem:
+            return False
+        ok = qbank.save(stem, online_quiz.answer_text(q))
+        if ok:
+            self.saved.add(i)
+        return bool(ok)
+
+    def save_current(self):
+        if self.row < 0:
+            return
+        if self.row in self.saved:
+            self.stat.setText("这道题已经在题库里了")
+            return
+        if self._save_one(self.row):
+            self._refresh_marks()
+            self._render()
+            self.stat.setText("已收藏 ✓（题库里可编辑）")
+        else:
+            self.stat.setText("收藏失败（题库写入出错）")
+
+    def save_all(self):
+        if not self.qs:
+            return
+        n = 0
+        for i in range(len(self.qs)):
+            if i not in self.saved and self._save_one(i):
+                n += 1
+        self._refresh_marks()
+        if self.row >= 0:
+            self._render()
+        self.stat.setText("已收藏 %d 题 ✓" % n if n else "都已收藏过了")
+
+    def _go_back(self):
+        if self._on_back:
+            self._on_back()
+
+
 class BankPage(QWidget):
     """本地题库：检索 / 复制 / 删除 / 导入导出（内嵌在主窗口里）。"""
 
@@ -1743,6 +2029,7 @@ class BankPage(QWidget):
         self._on_back = on_back
         self.setObjectName("bankPage")
         self.setStyleSheet("")
+        self._c = theme_colors(getattr(parent, "theme", LIGHT))
 
         self.items = []
 
@@ -1799,6 +2086,14 @@ class BankPage(QWidget):
         m.addAction("导出 CSV（整个题库）", self.export_csv)
         self.btn_export_menu.setMenu(m)
 
+        # 组卷：把勾选的题拼成一张卷子（带标题）
+        self.btn_paper = QPushButton("组卷 ▾")
+        self.btn_paper.setCursor(Qt.PointingHandCursor)
+        mp = QMenu(self.btn_paper)
+        mp.addAction("组卷 → Markdown", lambda: self.make_paper("md"))
+        mp.addAction("组卷 → PDF", lambda: self.make_paper("pdf"))
+        self.btn_paper.setMenu(mp)
+
         self.btn_import = QPushButton("导入题库")
         self.btn_import.setToolTip("支持 CSV / Markdown / TXT / JSON")
         self.btn_import.clicked.connect(self.import_file)
@@ -1819,6 +2114,7 @@ class BankPage(QWidget):
             (self.btn_sel, 1, 0),
             (self.btn_export_menu, 2, 0), (self.btn_import, 2, 1),
             (self.btn_clear, 2, 2),
+            (self.btn_paper, 1, 3),
             (self.btn_close, 3, 2),
         ]
         for b, r, col in cells:
@@ -1884,7 +2180,7 @@ class BankPage(QWidget):
             return
         it = self.list.item(row).data(Qt.UserRole) or {}
         qtype = it.get("qtype") or ""
-        head = (f"<div style='color:#7f8896;font-size:12px'>存于 {it.get('created','')}"
+        head = (f"<div style='color:{self._c['muted']};font-size:12px'>存于 {it.get('created','')}"
                 f" · 命中 {it.get('hits',0)} 次"
                 + (f" · {HistoryPage._esc(qtype)}" if qtype else "")
                 + "</div>")
@@ -1892,18 +2188,18 @@ class BankPage(QWidget):
         sol = (it.get("solution") or "").strip()
         if not ans and sol:
             ans = _guess_answer(sol)
-        ans_html = (md_render.to_html(ans, color="#7ee787", font_size=16) if ans
-                    else "<div style='color:#8b949e;font-size:13px;padding:4px 0'>"
-                         "本题未单独给出答案，见下方解析</div>")
+        ans_html = (md_render.to_html(ans, color=self._c["answer"], font_size=16) if ans
+                    else "<div style='color:%s;font-size:13px;padding:4px 0'>"
+                         "本题未单独给出答案，见下方解析</div>" % self._c["muted"])
         html = (
             head
-            + "<div style='color:#8fb6ff;font-size:12px;margin:12px 0 4px'>题目</div>"
+            + "<div style='color:%s;font-size:12px;margin:12px 0 4px'>题目</div>" % self._c["accent"]
             + md_render.to_html(md_render.clean_text(it.get("q_text", "")),
-                                color="#f2f5f9", font_size=15)
-            + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>答案</div>"
+                                color=self._c["text"], font_size=15)
+            + "<div style='color:%s;font-size:12px;margin:14px 0 4px'>答案</div>" % self._c["accent"]
             + ans_html
-            + "<div style='color:#8fb6ff;font-size:12px;margin:14px 0 4px'>解析</div>"
-            + md_render.to_html(sol or "（无）", color="#f2f5f9", font_size=15)
+            + "<div style='color:%s;font-size:12px;margin:14px 0 4px'>解析</div>" % self._c["accent"]
+            + md_render.to_html(sol or "（无）", color=self._c["text"], font_size=15)
         )
         self.view.setHtml(html)
         self.view.verticalScrollBar().setValue(0)
@@ -2004,6 +2300,39 @@ class BankPage(QWidget):
             return
         qbank.clear()
         self.reload()
+
+    def make_paper(self, fmt="md"):
+        """组卷：把勾选的题拼成一张带标题的卷子（MD / PDF）。"""
+        items = self._checked_items()
+        if not items:
+            self.stat.setText("先勾选要组卷的题目")
+            return
+        from PyQt5.QtWidgets import QFileDialog
+        import paper_export
+        title, ok = QInputDialog.getText(self, "组卷", "试卷标题：",
+                                         text="%s 组卷" % time.strftime("%Y-%m-%d"))
+        if not ok:
+            return
+        title = (title or "").strip() or "组卷"
+        ext = "md" if fmt == "md" else "pdf"
+        safe = re.sub(r'[\\/:*?"<>|]', "-", title)
+        p, _ = QFileDialog.getSaveFileName(
+            self, "保存试卷", "%s.%s" % (safe, ext),
+            "Markdown (*.md)" if fmt == "md" else "PDF (*.pdf)")
+        if not p:
+            return
+        try:
+            if fmt == "md":
+                md = paper_export.build_md(items, title=title,
+                                           with_answer=self.chk_answer.isChecked())
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(md)
+            else:
+                paper_export.export_pdf(items, p, title=title,
+                                        with_answer=self.chk_answer.isChecked())
+            self.stat.setText("已生成试卷 → %s ✓" % os.path.basename(p))
+        except Exception as e:
+            self.stat.setText("组卷失败：%s" % (e,))
 
     def _go_back(self):
         if self._on_back:
@@ -2291,6 +2620,19 @@ DARK = {
     "log": "#262626",
     "sb": "#5A5A5A", "sbHover": "#6E6E6E",
 }
+
+
+def theme_colors(theme=None):
+    """页面预览用的配色：跟随系统深浅色，别拿死白字往白底上画。"""
+    t = theme or LIGHT
+    dark = (t.get("text") == "#FFFFFF")
+    return {
+        "text": t["text"],
+        "muted": t["muted"],
+        "accent": "#8fb6ff" if dark else t["accent"],
+        "answer": "#7ee787" if dark else "#1E7B34",
+        "warn": "#d29922" if dark else "#9A6700",
+    }
 
 
 def build_qss(t):
@@ -2587,6 +2929,7 @@ class MainWindow(QWidget):
 
         self.nav = {}
         for key, icon, text in (("home", "\ue80f", "答题"),
+                                ("online", "\ue774", "在线试卷"),
                                 ("history", "\ue81c", "历史记录"),
                                 ("bank", "\ue8f1", "题库"),
                                 ("settings", "\ue713", "设置"),
@@ -2731,6 +3074,7 @@ class MainWindow(QWidget):
         # ---- 其他页面
         self.stack.addWidget(self.page_home)
         self.page_history = HistoryPage(self, on_back=lambda: self.show_page("home"))
+        self.page_online = OnlinePage(self, on_back=lambda: self.show_page("home"))
         self.page_bank = BankPage(self, on_back=lambda: self.show_page("home"))
         self.page_settings = SettingsPage(self.cfg, self, on_saved=self._on_settings_saved,
                                           on_back=lambda: self.show_page("home"))
@@ -2741,7 +3085,8 @@ class MainWindow(QWidget):
         self.page_settings_scroll.setFrameShape(QFrame.NoFrame)
         self.page_settings_scroll.setWidget(self.page_settings)
         self.page_about = AboutPage(self, on_check=self._about_check)
-        for p in (self.page_history, self.page_bank, self.page_settings_scroll, self.page_about):
+        for p in (self.page_history, self.page_online, self.page_bank,
+                  self.page_settings_scroll, self.page_about):
             self.stack.addWidget(p)
         self.stack.setCurrentWidget(self.page_home)
         self.nav["home"].setChecked(True)
@@ -2775,6 +3120,7 @@ class MainWindow(QWidget):
 
     def _show_page(self, name, animate=True):
         page = {"home": self.page_home, "history": self.page_history,
+                "online": getattr(self, "page_online", None),
                 "bank": self.page_bank,
                 "settings": getattr(self, "page_settings_scroll", self.page_settings),
                 "about": getattr(self, "page_about", None)}.get(name)
@@ -2788,7 +3134,6 @@ class MainWindow(QWidget):
             self.page_history.reload()
         elif name == "bank":
             self.page_bank.reload()
-
     def _resize_to(self, w, h, page=None, animate=True):
         """窗口尺寸/位置过渡（不再锁死尺寸，用户随时可以拖边缩放）。"""
         start = self.geometry()
@@ -3369,6 +3714,19 @@ class MainWindow(QWidget):
             self.tray.showMessage("Knowlib", "主界面已收起，点托盘图标可恢复",
                                   QSystemTrayIcon.Information, 2500)
 
+    @safe_slot
+    def open_online(self, code):
+        """从链接/深链打开在线试卷。"""
+        code = (code or "").strip()
+        if not code:
+            return
+        self.show_page("online")
+        try:
+            self.page_online.load_code(code)
+        except Exception:
+            traceback.print_exc()
+        self.show_main()
+
     def toggle_overlay(self):
         if self.overlay.isVisible():
             self.overlay.hide()
@@ -3502,8 +3860,27 @@ def _install_crash_log():
         pass
 
 
+def register_protocol():
+    """把 knowlib:// 注册给当前 exe（HKCU，无需管理员），网页/微信里点链接就能拉起 PC 端。"""
+    try:
+        import winreg
+        if getattr(sys, "frozen", False):
+            exe = sys.executable
+        else:
+            exe = os.path.abspath(sys.argv[0])
+        base = r"Software\Classes\knowlib"
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base) as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "URL:Knowlib Protocol")
+            winreg.SetValueEx(k, "URL Protocol", 0, winreg.REG_SZ, "")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base + r"\shell\open\command") as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, '"%s" "%%1"' % exe)
+    except Exception:
+        pass
+
+
 def main():
     _install_crash_log()
+    register_protocol()
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)   # 关窗收托盘，真要退出走 quit_app
@@ -3515,7 +3892,8 @@ def main():
         probe = QLocalSocket()
         probe.connectToServer(SINGLE_NAME)
         if probe.waitForConnected(300):
-            probe.write(b"show")
+            _payload = " ".join(sys.argv[1:]).strip() or "show"
+            probe.write(_payload.encode("utf-8"))
             probe.flush()
             probe.waitForBytesWritten(300)
             probe.disconnectFromServer()
@@ -3529,12 +3907,33 @@ def main():
     w = MainWindow()
     app.setWindowIcon(w._app_icon())
 
+    # 命令行/深链打开在线试卷（knowlib://s/xxxx 或 https://knowlib.fun/s/xxxx）
+    for _a in sys.argv[1:]:
+        _c = online_quiz.code_from(_a)
+        if _c:
+            QTimer.singleShot(500, lambda c=_c: w.open_online(c))
+            break
+
     if server is not None:
         def _on_conn():
             c = server.nextPendingConnection()
-            if c:
-                c.readyRead.connect(lambda: (w.show_main(), c.disconnectFromServer()))
-                c.disconnected.connect(c.deleteLater)
+            if not c:
+                return
+
+            def _read():
+                try:
+                    msg = bytes(c.readAll()).decode("utf-8", "replace").strip()
+                except Exception:
+                    msg = ""
+                c.disconnectFromServer()
+                _code = online_quiz.code_from(msg) if msg and msg != "show" else ""
+                if _code:
+                    w.open_online(_code)
+                else:
+                    w.show_main()
+
+            c.readyRead.connect(_read)
+            c.disconnected.connect(c.deleteLater)
         server.newConnection.connect(_on_conn)
         w._local_server = server   # 保持引用，别被回收
 
