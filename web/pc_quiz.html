@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Knowlib 试卷</title>
+<link rel="stylesheet" href="katex/katex.inline.css">
+<script src="katex/katex.min.js"></script>
+<style>
+:root{
+  --bg:#f4f5f7; --card:#ffffff; --fg:#111114; --fg2:#6e6e73; --line:#00000014;
+  --accent:#0A84FF; --soft:#0A84FF14; --ok:#34C759; --okbg:#34C75918; --no:#FF453A; --nobg:#FF453A18;
+  --shadow:0 2px 10px #0000000a;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#0e0f12; --card:#1c1c1f; --fg:#f2f2f5; --fg2:#9a9aa0; --line:#ffffff1f;
+        --soft:#0A84FF22; --okbg:#34C75922; --nobg:#FF453A22; --shadow:0 2px 10px #00000040;}
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+  font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+.topbar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:12px 22px;
+  display:flex;align-items:center;gap:14px}
+.topbar .t{font-size:17px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar .meta{font-size:13px;color:var(--fg2);white-space:nowrap}
+.topbar .sp{flex:1}
+.layout{display:flex;align-items:flex-start;gap:20px;max-width:1220px;margin:0 auto;padding:18px 22px 60px}
+main{flex:1 1 auto;min-width:0}
+aside{flex:0 0 252px;width:252px;position:sticky;top:64px;align-self:flex-start}
+
+.q{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px 14px;
+   margin-bottom:16px;box-shadow:var(--shadow);scroll-margin-top:70px}
+.q .head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.chip{font-size:12px;color:var(--accent);background:var(--soft);border-radius:999px;padding:2px 10px;font-weight:600}
+.chip.no{color:var(--fg2);background:transparent;border:1px solid var(--line)}
+.score{margin-left:auto;font-size:12.5px;color:var(--fg2)}
+.stem{font-size:17px;line-height:1.85;word-break:break-word}
+.stem code{background:var(--soft);border-radius:4px;padding:1px 5px;font-size:.94em}
+.opts{margin-top:10px}
+.opt{display:flex;gap:10px;align-items:flex-start;padding:10px 13px;border:1px solid var(--line);
+   border-radius:12px;margin:8px 0;cursor:pointer;transition:background .12s,border-color .12s;background:transparent}
+.opt:hover{background:var(--soft);border-color:var(--accent)}
+.opt .k{font-weight:700;color:var(--fg2);min-width:1.2em}
+.opt.picked{border-color:var(--accent);background:var(--soft)}
+.opt.ok{border-color:var(--ok);background:var(--okbg)}
+.opt.no{border-color:var(--no);background:var(--nobg)}
+.opt .mark{margin-left:auto;font-size:13px;font-weight:700}
+.opt.ok .mark{color:var(--ok)} .opt.no .mark{color:var(--no)}
+.actions{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.btn{border:none;border-radius:10px;padding:8px 14px;font-size:14px;font-weight:600;
+  background:var(--accent);color:#fff;cursor:pointer;font-family:inherit}
+.btn.ghost{background:transparent;color:var(--fg);border:1px solid var(--line);font-weight:500}
+.btn.ghost:hover{border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.55;cursor:default}
+.ansbox{margin-top:12px;border-top:1px dashed var(--line);padding-top:12px;display:none}
+.ansbox.on{display:block}
+.ansbox .lab{font-size:12px;color:var(--fg2);margin:0 0 4px}
+.ansbox .val{font-size:17px;color:var(--accent);font-weight:600;word-break:break-word}
+.ansbox .ana{font-size:15px;color:var(--fg);margin-top:10px;line-height:1.8}
+textarea.draft{width:100%;min-height:64px;margin-top:10px;border:1px solid var(--line);border-radius:10px;
+  background:var(--bg);color:var(--fg);padding:10px 12px;font:inherit;font-size:15px;resize:vertical}
+
+aside .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;
+  box-shadow:var(--shadow);margin-bottom:14px}
+aside h3{margin:0 0 10px;font-size:14px;color:var(--fg2);font-weight:600;letter-spacing:.02em}
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+.gbtn{aspect-ratio:1/1;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);
+  font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.gbtn:hover{border-color:var(--accent);color:var(--accent)}
+.gbtn.done{background:var(--soft);border-color:var(--accent);color:var(--accent)}
+.gbtn.cur{outline:2px solid var(--accent);outline-offset:1px}
+.legend{font-size:12px;color:var(--fg2);margin-top:10px;line-height:1.7}
+.progress{height:6px;border-radius:999px;background:var(--line);overflow:hidden;margin-top:10px}
+.progress i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+.katex{font-size:1.02em}
+.katex-display{margin:.5em 0}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="t" id="ttl">试卷</div>
+  <div class="meta" id="meta"></div>
+  <div class="sp"></div>
+  <div class="meta" id="prog">已答 0 / 0</div>
+</div>
+
+<div class="layout">
+  <main id="qlist"></main>
+  <aside>
+    <div class="card">
+      <h3>答题卡</h3>
+      <div class="grid" id="grid"></div>
+      <div class="progress"><i id="bar"></i></div>
+      <div class="legend" id="legend">点题号跳到对应题目</div>
+    </div>
+  </aside>
+</div>
+
+<script>
+window.__KLPC__ = 1;
+var DATA = window.__KLDATA__ || {title:'试卷', total:0, questions:[]};
+var QS = DATA.questions || [];
+var picked = {};     // n -> key
+var shown  = {};     // n -> true 已展开答案
+
+function esc(s){
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function renderMathSeg(tex, display){
+  try{
+    return katex.renderToString(tex, {throwOnError:false, displayMode:!!display, output:'htmlAndMathml'});
+  }catch(e){ return esc(tex); }
+}
+// 极简 markdown：**粗体**、`代码`、换行、数学
+function md(src, displayMathInline){
+  var s = String(src == null ? '' : src);
+  var out = [], last = 0;
+  var re = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$([^$\n]+?)\$/g, m;
+  while((m = re.exec(s))){
+    out.push(textPart(s.slice(last, m.index)));
+    if(m[1] != null || m[2] != null){
+      out.push(renderMathSeg((m[1] != null ? m[1] : m[2]).trim(), true));
+    }else{
+      out.push(renderMathSeg((m[3] != null ? m[3] : m[4]).trim(), false));
+    }
+    last = m.index + m[0].length;
+  }
+  out.push(textPart(s.slice(last)));
+  return out.join('');
+}
+function textPart(t){
+  if(!t) return '';
+  var h = esc(t);
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/\r?\n\r?\n/g, '<br><br>');
+  h = h.replace(/\r?\n/g, '<br>');
+  return h;
+}
+function optsOf(q){
+  var o = q.options || [];
+  if((!o || !o.length) && String(q.type||'').toLowerCase() === 'judge'){
+    return [{label:'对', text:'正确'}, {label:'错', text:'错误'}];
+  }
+  return o;
+}
+function correctKey(q){
+  var a = String(q.answer || '').trim();
+  var t = String(q.type || '').toLowerCase();
+  if(t === 'judge'){
+    if(/^(对|正确|√|T|t|true|True|是|1)$/.test(a)) return '对';
+    if(/^(错|错误|×|x|X|F|f|false|False|否|0)$/.test(a)) return '错';
+    return '';
+  }
+  var m = a.match(/^\s*([A-Ha-h])/);
+  return m ? m[1].toUpperCase() : '';
+}
+
+function build(){
+  var ttl = (DATA.title || '试卷').replace(/^Knowlib\s*试卷\s*/, '');
+  document.getElementById('ttl').textContent = ttl || '试卷';
+  document.title = ttl || '试卷';
+  var total = DATA.total || QS.reduce(function(a,q){ return a + (Number(q.score)||0); }, 0);
+  document.getElementById('meta').textContent = '共 ' + QS.length + ' 题 · ' + total + ' 分';
+  var list = document.getElementById('qlist');
+  list.innerHTML = QS.map(function(q, n){
+    var opts = optsOf(q), html = '';
+    html += '<div class="q" id="q' + n + '">';
+    html += '<div class="head"><span class="chip">' + esc(q.typeName || q.type || '题目') + '</span>';
+    html += '<span class="score">第 ' + (n+1) + ' 题 · ' + (Number(q.score)||0) + ' 分</span></div>';
+    html += '<div class="stem">' + md(q.stem) + '</div>';
+    if(opts.length){
+      html += '<div class="opts">' + opts.map(function(o){
+        var k = String(o.label || '').toUpperCase();
+        var txt = (o.text != null ? o.text : '');
+        return '<div class="opt" data-n="' + n + '" data-k="' + esc(k) + '"><span class="k">' + esc(k) + '.</span>'
+             + '<span class="tx">' + md(txt) + '</span><span class="mark"></span></div>';
+      }).join('') + '</div>';
+    }else{
+      html += '<textarea class="draft" placeholder="在这里作答（可选）"></textarea>';
+    }
+    html += '<div class="actions">';
+    html += '<button class="btn ghost" data-act="ans" data-n="' + n + '">看答案</button>';
+    html += '<button class="btn" data-act="save" data-n="' + n + '">＋ 加入题库</button>';
+    html += '</div>';
+    html += '<div class="ansbox" id="ans' + n + '"></div>';
+    html += '</div>';
+    return html;
+  }).join('');
+
+  var grid = document.getElementById('grid');
+  grid.innerHTML = QS.map(function(q, n){
+    return '<button class="gbtn" data-jump="' + n + '">' + (n+1) + '</button>';
+  }).join('');
+  refreshProgress();
+}
+
+function answerHTML(q){
+  var a = String(q.answer == null ? '' : q.answer).trim() || '（这道题没给答案）';
+  var s = String(q.analysis || '').trim();
+  var h = '<div class="lab">参考答案</div><div class="val">' + md(a) + '</div>';
+  if(s) h += '<div class="lab" style="margin-top:12px">解析</div><div class="ana">' + md(s) + '</div>';
+  return h;
+}
+
+function showAns(n, force){
+  var box = document.getElementById('ans' + n);
+  if(!box) return;
+  if(box.classList.contains('on') && !force){ box.classList.remove('on'); return; }
+  box.innerHTML = answerHTML(QS[n]);
+  box.classList.add('on');
+  shown[n] = true;
+}
+
+function pick(n, k){
+  var q = QS[n], right = correctKey(q);
+  picked[n] = k;
+  var card = document.getElementById('q' + n);
+  card.querySelectorAll('.opt').forEach(function(el){
+    el.classList.remove('picked','ok','no');
+    var kk = el.getAttribute('data-k');
+    var mark = el.querySelector('.mark');
+    if(mark) mark.textContent = '';
+    if(kk === k) el.classList.add('picked');
+    if(right){
+      if(kk === right){ el.classList.add('ok'); if(mark) mark.textContent = '✓'; }
+      else if(kk === k){ el.classList.add('no'); if(mark) mark.textContent = '✕'; }
+    }
+  });
+  if(right) showAns(n, true);
+  refreshProgress();
+}
+
+function refreshProgress(){
+  var done = 0;
+  for(var n = 0; n < QS.length; n++){
+    var answered = (picked[n] != null) || shown[n];
+    var btn = document.querySelector('.gbtn[data-jump="' + n + '"]');
+    if(btn) btn.classList.toggle('done', !!answered);
+    if(answered) done++;
+  }
+  document.getElementById('prog').textContent = '已答 ' + done + ' / ' + QS.length;
+  var bar = document.getElementById('bar');
+  if(bar) bar.style.width = (QS.length ? (done * 100 / QS.length) : 0) + '%';
+}
+
+document.addEventListener('click', function(ev){
+  var opt = ev.target.closest ? ev.target.closest('.opt') : null;
+  if(opt){
+    pick(Number(opt.getAttribute('data-n')), opt.getAttribute('data-k'));
+    return;
+  }
+  var btn = ev.target.closest ? ev.target.closest('button') : null;
+  if(!btn) return;
+  var act = btn.getAttribute('data-act');
+  if(act === 'ans'){ showAns(Number(btn.getAttribute('data-n'))); return; }
+  if(act === 'save'){
+    var n = Number(btn.getAttribute('data-n'));
+    btn.disabled = true;
+    btn.textContent = '已加入 ✓';
+    btn.classList.add('ghost');
+    location.hash = 'klsave:' + n;
+    return;
+  }
+  var jump = btn.getAttribute('data-jump');
+  if(jump != null){
+    var el = document.getElementById('q' + jump);
+    if(el){ el.scrollIntoView({behavior:'smooth', block:'start'}); }
+    document.querySelectorAll('.gbtn.cur').forEach(function(b){ b.classList.remove('cur'); });
+    btn.classList.add('cur');
+  }
+});
+
+// 滚动时高亮答题卡
+window.addEventListener('scroll', function(){
+  var best = null, bestTop = -1e9;
+  for(var n = 0; n < QS.length; n++){
+    var el = document.getElementById('q' + n);
+    if(!el) continue;
+    var top = el.getBoundingClientRect().top;
+    if(top < 120 && top > bestTop){ bestTop = top; best = n; }
+  }
+  if(best == null) return;
+  document.querySelectorAll('.gbtn.cur').forEach(function(b){ b.classList.remove('cur'); });
+  var b = document.querySelector('.gbtn[data-jump="' + best + '"]');
+  if(b) b.classList.add('cur');
+}, {passive:true});
+
+build();
+</script>
+</body>
+</html>

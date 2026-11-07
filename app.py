@@ -2579,8 +2579,11 @@ class OnlinePage(QWidget):
         self.btn_save.setObjectName("primary")
         self.btn_save.clicked.connect(self.save_current)
         self.btn_save_all = QPushButton("收藏整卷")
+        self.btn_save_all.setCursor(Qt.PointingHandCursor)
         self.btn_save_all.clicked.connect(self.save_all)
-        show_list = [self.btn_save, self.btn_save_all] if self.use_web else [
+        self.btn_save_all.setObjectName("ghost")
+        # 网页模式：每题卡片上已自带「加入题库」，工具栏只留「收藏整卷」
+        show_list = [self.btn_save_all] if self.use_web else [
             self.btn_show, self.btn_save, self.btn_save_all]
         for b in show_list:
             b.setCursor(Qt.PointingHandCursor)

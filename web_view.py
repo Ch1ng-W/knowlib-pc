@@ -44,8 +44,17 @@ except Exception:            # 没装 / 装坏了
     HAVE_WEBENGINE = False
 
 
+def _page_path():
+    """桌面版优先（pc_quiz.html），没有就退回网页原版。"""
+    for name in ("pc_quiz.html", "q.html"):
+        p = os.path.join(WEB_DIR, name)
+        if os.path.exists(p):
+            return p
+    return os.path.join(WEB_DIR, "q.html")
+
+
 def web_available():
-    return HAVE_WEBENGINE and os.path.exists(os.path.join(WEB_DIR, "q.html"))
+    return HAVE_WEBENGINE and os.path.exists(_page_path())
 
 
 class QuizView(object):
@@ -86,7 +95,7 @@ def load_paper(view, doc):
         pass
     view.page().scripts().insert(scr)
     view._kl_script = scr
-    view.load(QUrl.fromLocalFile(os.path.join(WEB_DIR, "q.html")))
+    view.load(QUrl.fromLocalFile(_page_path()))
 
 
 def current_index(view, cb):
@@ -97,6 +106,7 @@ def current_index(view, cb):
 
 _SAVE_JS = r"""
 (function(){
+  if(window.__KLPC__) return 'pc-native';
   if(window.__klSaveHooked) return 'already';
   window.__klSaveHooked=true;
   function addBtn(){
