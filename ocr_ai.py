@@ -20,7 +20,18 @@ class OcrEngine:
 
     def recognize(self, pil_image):
         import numpy as np
-        arr = np.array(pil_image.convert("RGB"))
+        img = pil_image.convert("RGB")
+        # 小图先放大再识别（选项/公式字号小时效果明显）
+        try:
+            w, h = img.size
+            m = max(w, h)
+            if m < 700:
+                img = img.resize((int(w * 2.2), int(h * 2.2)))
+            elif m < 1100:
+                img = img.resize((int(w * 1.7), int(h * 1.7)))
+        except Exception:
+            pass
+        arr = np.array(img)
         t0 = time.time()
         result, _ = self.ocr(arr)
         cost = time.time() - t0
@@ -149,7 +160,13 @@ class AiClient:
             kw = dict(
                 model=cfg.get("model"),
                 messages=[
-                    {"role": "system", "content": "你是严谨的解题助手。严格按格式输出：第一行「答案：」，第二行起「解析：」；不要复述题干，不要罗列全部选项（选择题只给正确选项的字母）。"},
+                    {"role": "system", "content": (
+                        "你是严谨的解题助手。严格按下面格式输出：\n"
+                        "第一行「答案：」——选择题写成「B．<该选项的完整原文>」（字母 + 选项内容，两边都要有）；"
+                        "判断题写「对」或「错」；填空/简答直接写答案内容。\n"
+                        "第二行起「解析：」——讲关键思路，不要复述题干。\n"
+                        "除正确项外不要罗列其他选项；如果题目里的选项文字看不清，先根据题意推断再给出。"
+                    )},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=float(cfg.get("temperature", 0.2)),

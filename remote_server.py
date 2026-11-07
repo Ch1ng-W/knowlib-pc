@@ -256,6 +256,18 @@ def list_windows():
     return out
 
 
+def window_rect(hwnd):
+    """取窗口屏幕矩形。"""
+    try:
+        rect = wt.RECT()
+        user32.GetWindowRect(int(hwnd), ctypes.byref(rect))
+        return {"left": int(rect.left), "top": int(rect.top),
+                "width": int(rect.right - rect.left),
+                "height": int(rect.bottom - rect.top)}
+    except Exception:
+        return None
+
+
 def _capture_hwnd(hwnd):
     """PrintWindow 抓窗口（即使被遮住也行）。失败返回 None。"""
     try:

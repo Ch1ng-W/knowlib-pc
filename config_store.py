@@ -12,7 +12,7 @@ import sys
 APP_NAME = "XiaoTuanSouTi"      # 旧目录名，仅用于迁移
 BRAND = "Knowlib"               # 新数据目录名
 REG_NAME = "Knowlib"            # 开机自启的注册表项名
-APP_VERSION = "1.7.3"
+APP_VERSION = "1.7.4"
 
 DATA_FILES = ("config.json", "bank.db", "history.jsonl")
 
@@ -102,7 +102,8 @@ DEFAULTS = {
     "prompt": (
         "你是解题助手。下面是一道题的截图文字识别结果。请：\n"
         "1) 先还原题目（题干+选项/空），修正 OCR 明显错字；\n"
-        "2) 给出最终答案（选择题只给字母，多选用逗号分隔；填空/简答给内容）；\n"
+        "2) 给出最终答案：选择题写成「B．<选项完整原文>」（字母 + 选项内容都要有，多选用逗号分隔）；"
+        "判断题写对/错；填空/简答写内容；\n"
         "3) 再用 3~6 句说明为什么，关键步骤写清楚。\n"
         "输出格式：\n答案：xxx\n解析：xxx"
     ),
@@ -172,10 +173,26 @@ def config_path():
 def load():
     cfg = dict(DEFAULTS)
     p = config_path()
+    changed = False
     if os.path.exists(p):
         try:
             with open(p, "r", encoding="utf-8") as f:
                 cfg.update(json.load(f) or {})
+        except Exception:
+            pass
+    # 迁移旧提示词：只给字母 → 要带选项内容
+    try:
+        pr = str(cfg.get("prompt") or "")
+        if "选择题只给字母" in pr:
+            cfg["prompt"] = pr.replace(
+                "选择题只给字母，多选用逗号分隔；填空/简答给内容",
+                "选择题写成「B．<选项完整原文>」（字母+选项内容都要有，多选用逗号分隔）；判断题写对/错；填空/简答写内容")
+            changed = True
+    except Exception:
+        pass
+    if changed:
+        try:
+            save(cfg)
         except Exception:
             pass
     return cfg

@@ -3862,6 +3862,20 @@ class ScanWorker(QObject):
                         self.state.emit("抓不到这个窗口（最小化 / 已关闭）", COLOR_WARN)
                         time.sleep(1.2)
                         continue
+                    rel = self.cfg.get("win_ratio") or {}
+                    if rel:
+                        try:
+                            W, H = img.size
+                            rx = max(0.0, min(0.98, float(rel.get("x", 0))))
+                            ry = max(0.0, min(0.98, float(rel.get("y", 0))))
+                            rw = max(0.02, min(1.0 - rx, float(rel.get("w", 1))))
+                            rh = max(0.02, min(1.0 - ry, float(rel.get("h", 1))))
+                            box = (int(rx * W), int(ry * H),
+                                   int((rx + rw) * W), int((ry + rh) * H))
+                            if box[2] - box[0] > 8 and box[3] - box[1] > 8:
+                                img = img.crop(box)
+                        except Exception:
+                            pass
                 else:
                     shot = sct.grab(self.region)
                     self.after_capture.emit()
@@ -4546,6 +4560,10 @@ class MainWindow(QWidget):
         self.win_combo.setToolTip("按窗口搜题：选一个窗口，抓取时窗口被盖住也能拍到")
         self.win_combo.refresh_cb = self.reload_windows
         self.win_combo.activated.connect(self.on_window_pick)
+        self.btn_win_area = QPushButton("窗口内框选")
+        self.btn_win_area.setCursor(Qt.PointingHandCursor)
+        self.btn_win_area.setToolTip("只框窗口里题目那一块（推荐，避免把工具栏/评论也拍进去）")
+        self.btn_win_area.clicked.connect(self.pick_win_area)
         self._fill_windows()
         self.btn_start = QPushButton("开始")
         self.btn_start.setObjectName("primary")
@@ -4555,6 +4573,7 @@ class MainWindow(QWidget):
         self.btn_shot.clicked.connect(self.shot_once)
         row1.addWidget(self.btn_region)
         row1.addWidget(self.win_combo)
+        row1.addWidget(self.btn_win_area)
         row1.addWidget(self.btn_start)
         row1.addWidget(self.btn_shot)
         row1.addStretch(1)
@@ -5062,7 +5081,8 @@ class MainWindow(QWidget):
     def update_region_label(self):
         if self.cfg.get("src") == "window" and self.cfg.get("win_hwnd"):
             t = (self.cfg.get("win_title") or "窗口").strip()
-            self.region_label.setText("窗口：" + (t[:14] + "…" if len(t) > 14 else t))
+            extra = " · 已框选区域" if self.cfg.get("win_ratio") else ""
+            self.region_label.setText("窗口：" + (t[:12] + "…" if len(t) > 12 else t) + extra)
             self.region_label.setToolTip("监控窗口：" + t)
             self.region_label.setStyleSheet(
                 "color:#b9a4ff;background:rgba(124,92,255,30);border-radius:9px;"
@@ -5187,11 +5207,48 @@ class MainWindow(QWidget):
         self.cfg["src"] = "window"
         self.cfg["win_hwnd"] = int(w["id"])
         self.cfg["win_title"] = w.get("title") or ""
+        self.cfg.pop("win_ratio", None)
         config_store.save(self.cfg)
         self.update_region_label()
         self.add_log("已选窗口：%s（%d×%d）" % (self.cfg["win_title"],
                                             w.get("w") or 0, w.get("h") or 0))
         self.set_state("已选窗口，点「开始」", COLOR_OK)
+
+    def pick_win_area(self):
+        """在已选窗口里再框一小块（只抓题目区域）。"""
+        hwnd = self.cfg.get("win_hwnd") if self.cfg.get("src") == "window" else 0
+        if not hwnd:
+            self.add_log("先在下拉里选一个窗口，再框选题目区域")
+            return
+        rc = remote_server.window_rect(hwnd)
+        if not rc or rc.get("width", 0) <= 0:
+            self.add_log("拿不到窗口位置（可能最小化了），先还原再试")
+            return
+        self.hide()
+        QApplication.processEvents()
+        sel = RegionSelector()
+        sel.selected.connect(lambda r: self._on_win_area(r, rc))
+        sel.showFullScreen()
+        self._sel = sel
+
+    def _on_win_area(self, r, rc):
+        try:
+            w = max(1, int(rc.get("width") or 1))
+            h = max(1, int(rc.get("height") or 1))
+            x = max(0.0, min(0.99, (r["left"] - rc["left"]) / float(w)))
+            y = max(0.0, min(0.99, (r["top"] - rc["top"]) / float(h)))
+            rw = max(0.02, min(1.0 - x, r["width"] / float(w)))
+            rh = max(0.02, min(1.0 - y, r["height"] / float(h)))
+        except Exception:
+            self.show()
+            return
+        self.cfg["win_ratio"] = {"x": round(x, 4), "y": round(y, 4),
+                                 "w": round(rw, 4), "h": round(rh, 4)}
+        config_store.save(self.cfg)
+        self.update_region_label()
+        self.show()
+        self.add_log("窗口内已框选：%d×%d" % (r["width"], r["height"]))
+        self.set_state("窗口区域已设置，点「开始」", COLOR_OK)
 
     # -------- 运行
     def toggle_run(self):
