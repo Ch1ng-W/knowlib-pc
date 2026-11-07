@@ -2501,11 +2501,10 @@ class OnlinePage(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(12)
+        lay.setSpacing(8)
 
-        t = QLabel("在线试卷")
-        t.setObjectName("pageTitle")
-        lay.addWidget(t)
+        # 有 QtWebEngine 就跑桌面版答题页（KaTeX 真公式），否则退回老富文本
+        self.use_web = bool(web_view and web_view.web_available())
 
         row1 = QHBoxLayout()
         row1.setSpacing(8)
@@ -2515,19 +2514,24 @@ class OnlinePage(QWidget):
         self.link.returnPressed.connect(self.open_link)
         self.btn_open = QPushButton("打开")
         self.btn_open.setObjectName("primary")
-        self.btn_open.setMinimumWidth(84)
+        self.btn_open.setMinimumWidth(72)
         self.btn_open.clicked.connect(self.open_link)
+        self.btn_save_all = QPushButton("收藏整卷")
+        self.btn_save_all.setCursor(Qt.PointingHandCursor)
+        self.btn_save_all.clicked.connect(self.save_all)
         row1.addWidget(self.link, 1)
         row1.addWidget(self.btn_open)
+        if self.use_web:
+            # 每题卡片上已经「加入题库」，这里只留一个整卷收藏
+            self.btn_save_all.setObjectName("ghost")
+            row1.addWidget(self.btn_save_all)
         lay.addLayout(row1)
 
-        self.tip = QLabel("打开后可直接在 PC 里做题；点「收藏本题」存进本地题库，题库里能编辑、能组卷")
+        self.tip = QLabel("")
         self.tip.setObjectName("sub")
         self.tip.setWordWrap(True)
+        self.tip.setVisible(False)
         lay.addWidget(self.tip)
-
-        # 有 QtWebEngine 就跑网页版答题页（KaTeX 真公式），否则退回老富文本
-        self.use_web = bool(web_view and web_view.web_available())
 
         body = QHBoxLayout()
         body.setSpacing(12)
@@ -2578,13 +2582,8 @@ class OnlinePage(QWidget):
         self.btn_save = QPushButton("收藏本题")
         self.btn_save.setObjectName("primary")
         self.btn_save.clicked.connect(self.save_current)
-        self.btn_save_all = QPushButton("收藏整卷")
-        self.btn_save_all.setCursor(Qt.PointingHandCursor)
-        self.btn_save_all.clicked.connect(self.save_all)
-        self.btn_save_all.setObjectName("ghost")
-        # 网页模式：每题卡片上已自带「加入题库」，工具栏只留「收藏整卷」
-        show_list = [self.btn_save_all] if self.use_web else [
-            self.btn_show, self.btn_save, self.btn_save_all]
+        # 网页模式：上面的行已经有「收藏整卷」，这里只放状态
+        show_list = [] if self.use_web else [self.btn_show, self.btn_save]
         for b in show_list:
             b.setCursor(Qt.PointingHandCursor)
             b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + 28)
@@ -2594,9 +2593,9 @@ class OnlinePage(QWidget):
         self.stat.setObjectName("sub")
         tools.addWidget(self.stat)
         if self.use_web:
-            # 网页模式：工具栏直接放外层，别让空的 right 分走一半宽度
-            lay.addLayout(tools)
+            # 网页模式：网页自己占满宽度，状态行放在下面
             lay.addLayout(body, 1)
+            lay.addLayout(tools)
         else:
             right.addLayout(tools)
             body.addLayout(right, 1)
@@ -2652,8 +2651,10 @@ class OnlinePage(QWidget):
         code = online_quiz.code_from(self.link.text())
         if not code:
             self.tip.setText("链接里没找到试卷 code（应该是 …/s/xxxxxx 这种）")
+            self.tip.setVisible(True)
             return
         self.tip.setText("正在拉取试卷…")
+        self.tip.setVisible(True)
         self.btn_open.setEnabled(False)
         th = _OnlineFetch(code, self)
         th.ok.connect(self._on_doc)
@@ -2665,6 +2666,7 @@ class OnlinePage(QWidget):
     def _on_err(self, msg):
         self.btn_open.setEnabled(True)
         self.tip.setText("打开失败：" + msg)
+        self.tip.setVisible(True)
 
     @safe_slot
     def _on_doc(self, doc, qs):
@@ -2683,14 +2685,19 @@ class OnlinePage(QWidget):
             self._empty()
             return
         total = sum(float(q.get("score") or 0) for q in self.qs)
-        self.tip.setText("《%s》· %d 题 · 共 %g 分" % (title, len(self.qs), total))
         if self.use_web:
+            # 网页顶部已经有大标题和「共 N 题 · M 分」，这里不再重复
+            self.tip.setText("")
+            self.tip.setVisible(False)
             try:
                 web_view.load_paper(self.view, self.doc)
             except Exception as e:
                 self.tip.setText("渲染失败：%s" % e)
-            self.stat.setText("已收藏 0 / %d" % len(self.qs))
+                self.tip.setVisible(True)
+            self.stat.setText("已加入 0 / %d" % len(self.qs))
             return
+        self.tip.setText("《%s》· %d 题 · 共 %g 分" % (title, len(self.qs), total))
+        self.tip.setVisible(True)
         self.list.clear()
         for i, q in enumerate(self.qs):
             it = QListWidgetItem("%d. %s" % (i + 1, q.get("type_name") or "题目"))
@@ -3063,16 +3070,8 @@ class PaperHubPage(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(6)
         self.btn_tabs = {}
-        for key, text in self.TABS:
-            b = QPushButton(text)
-            b.setCheckable(True)
-            b.setCursor(Qt.PointingHandCursor)
-            b.setFocusPolicy(Qt.NoFocus)
-            b.setProperty("cls", "tab")
-            b.clicked.connect(lambda _=False, k=key: self.show_tab(k))
-            bar.addWidget(b)
-            self.btn_tabs[key] = b
-        bar.addStretch(1)
+        self.on_tab = None
+        # 四个分区现在在左侧上级菜单（navSub），页面顶部不再占一行
         lay.addLayout(bar)
 
         self.stack = QStackedWidget()
@@ -3150,6 +3149,11 @@ class PaperHubPage(QWidget):
             b.setChecked(k == key)
         idx = {"online": 0, "hist": 1, "dash": 2, "compose": 3}.get(key, 0)
         self.stack.setCurrentIndex(idx)
+        try:
+            if self.on_tab:
+                self.on_tab(key)
+        except Exception:
+            traceback.print_exc()
         if key == "hist":
             self.reload_hist()
         elif key == "compose":
@@ -4078,6 +4082,10 @@ def build_qss(t):
         f"border-radius:4px;background:transparent;color:{t['text']};font-size:13px;}}"
         f"QPushButton#navItem:hover{{background:{t['hover']};}}"
         f"QPushButton#navItem:checked{{background:{t['sel']};font-weight:600;}}"
+        f"QPushButton#navSub{{text-align:left;padding:6px 10px 6px 30px;border:none;"
+        f"border-radius:4px;background:transparent;color:{t['muted']};font-size:12.5px;}}"
+        f"QPushButton#navSub:hover{{background:{t['hover']};color:{t['text']};}}"
+        f"QPushButton#navSub:checked{{background:{t['sel']};color:{t['text']};font-weight:600;}}"
         f"QPushButton#stepBtn{{background:{t['btn']};border:1px solid {t['btnBorder']};"
         f"border-radius:6px;padding:0px;font-size:15px;font-weight:600;}}"
         f"QPushButton#stepBtn:hover{{background:{t['btnHover']};}}"
@@ -4361,6 +4369,9 @@ class MainWindow(QWidget):
 
         self.nav = {}
         self._nav_text = {}
+        self.nav_sub = {}
+        _PAPER_SUB = (("online", "在线试卷"), ("hist", "历史试卷"),
+                      ("dash", "试卷后台"), ("compose", "组卷"))
         for key, icon, text in (("home", "\ue721", "答题"),
                                 ("online", "\ue774", "试卷"),
                                 ("history", "\ue81c", "历史记录"),
@@ -4378,6 +4389,17 @@ class MainWindow(QWidget):
             sl.addWidget(b)
             self.nav[key] = b
             self._nav_text[key] = text
+            if key == "online":
+                # 试卷的四个分区作为左侧二级菜单（不再放在页面顶上）
+                for sk, stext in _PAPER_SUB:
+                    sb = QPushButton(stext)
+                    sb.setObjectName("navSub")
+                    sb.setCheckable(True)
+                    sb.setFocusPolicy(Qt.NoFocus)
+                    sb.setCursor(Qt.PointingHandCursor)
+                    sb.clicked.connect(lambda _=False, k=sk: self._open_paper_tab(k))
+                    sl.addWidget(sb)
+                    self.nav_sub[sk] = sb
 
         sl.addStretch(1)
         self.btn_collapse = QPushButton("收起主界面")
@@ -4509,6 +4531,7 @@ class MainWindow(QWidget):
         self.stack.addWidget(self.page_home)
         self.page_history = HistoryPage(self, on_back=lambda: self.show_page("home"))
         self.page_paper = PaperHubPage(self)
+        self.page_paper.on_tab = self._sync_paper_nav
         self.page_bank = BankPage(self, on_back=lambda: self.show_page("home"))
         self.page_settings = SettingsPage(self.cfg, self, on_saved=self._on_settings_saved,
                                           on_back=lambda: self.show_page("home"))
@@ -4558,6 +4581,19 @@ class MainWindow(QWidget):
             except Exception:
                 pass
 
+    def _open_paper_tab(self, key):
+        """左侧「试卷」二级菜单：切页 + 切分区。"""
+        self.show_page("online")
+        try:
+            self.page_paper.show_tab(key)
+        except Exception:
+            traceback.print_exc()
+
+    @safe_slot
+    def _sync_paper_nav(self, key):
+        for k, b in getattr(self, "nav_sub", {}).items():
+            b.setChecked(k == key)
+
     def _show_page(self, name, animate=True):
         page = {"home": self.page_home, "history": self.page_history,
                 "online": getattr(self, "page_paper", None),
@@ -4570,6 +4606,11 @@ class MainWindow(QWidget):
         self._page_name = name
         for k, b in getattr(self, "nav", {}).items():
             b.setChecked(k == name)
+        if name == "online":
+            try:
+                self._sync_paper_nav(self.page_paper._tab)
+            except Exception:
+                pass
         if name == "history":
             self.page_history.reload()
         elif name == "bank":
