@@ -3785,10 +3785,11 @@ class ScanWorker(QObject):
     prepare_capture = pyqtSignal()    # 截图前：先把答案窗挪开
     after_capture = pyqtSignal()      # 截图后：恢复
 
-    def __init__(self, cfg, region):
+    def __init__(self, cfg, region, hwnd=None):
         super().__init__()
         self.cfg = cfg
         self.region = region
+        self.hwnd = int(hwnd) if hwnd else 0
         self.running = True
         self.paused = False
         self.force_once = False
@@ -3841,10 +3842,17 @@ class ScanWorker(QObject):
                 # 先让主线程把答案窗藏起来，避免把答案本身拍进去（否则会死循环）
                 self.prepare_capture.emit()
                 time.sleep(0.06)
-                shot = sct.grab(self.region)
-                self.after_capture.emit()
-                img = Image.frombytes("RGB", shot.size, shot.rgb)
-
+                if self.hwnd:
+                    img = remote_server.capture(self.hwnd)
+                    self.after_capture.emit()
+                    if img is None:
+                        self.state.emit("抓不到这个窗口（最小化 / 已关闭）", COLOR_WARN)
+                        time.sleep(1.2)
+                        continue
+                else:
+                    shot = sct.grab(self.region)
+                    self.after_capture.emit()
+                    img = Image.frombytes("RGB", shot.size, shot.rgb)
                 # 感知哈希：缩小成灰度小图再比，容忍光标闪烁/抗锯齿等微小变化
                 small = img.convert("L").resize((64, 40))
                 sig = list(small.getdata())
@@ -4299,6 +4307,67 @@ class AboutPage(QWidget):
             self._on_check(self.status)
 
 
+class WindowPicker(QDialog):
+    """选一个窗口当搜题来源（PrintWindow，被遮住也能抓）。"""
+
+    def __init__(self, parent, wins=None):
+        super().__init__(parent)
+        self.setWindowTitle("按窗口搜题")
+        self.setMinimumSize(540, 470)
+        self.chosen = None
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(10)
+        tip = QLabel("选一个窗口。之后点「开始」就只盯这个窗口截图，窗口被盖住也能抓到。")
+        tip.setObjectName("sub")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        self.list = QListWidget()
+        v.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        self.btn_refresh = QPushButton("刷新列表")
+        self.btn_refresh.clicked.connect(self.reload)
+        row.addWidget(self.btn_refresh)
+        row.addStretch(1)
+        b1 = QPushButton("取消")
+        b2 = QPushButton("用这个窗口")
+        b2.setObjectName("primary")
+        b1.clicked.connect(self.reject)
+        b2.clicked.connect(self.accept_sel)
+        row.addWidget(b1)
+        row.addWidget(b2)
+        v.addLayout(row)
+        self.list.itemDoubleClicked.connect(lambda _i: self.accept_sel())
+        self._wins = list(wins or [])
+        self.reload()
+
+    def reload(self):
+        try:
+            self._wins = remote_server.list_windows()
+        except Exception:
+            pass
+        self.list.clear()
+        for w in self._wins:
+            it = QListWidgetItem("%s    ·  %d×%d%s" % (
+                w.get("title") or "(无标题)", w.get("w") or 0, w.get("h") or 0,
+                "  （最小化）" if w.get("min") else ""))
+            it.setData(Qt.UserRole, w)
+            self.list.addItem(it)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def accept_sel(self):
+        it = self.list.currentItem()
+        if it is None:
+            return
+        w = it.data(Qt.UserRole) or {}
+        if w.get("min"):
+            QMessageBox.information(self, "窗口已最小化", "这个窗口最小化了，先还原再选。")
+            return
+        self.chosen = w
+        self.accept()
+
+
 class MainWindow(QWidget):
     hotkey = pyqtSignal(str)
 
@@ -4503,6 +4572,9 @@ class MainWindow(QWidget):
         row1.setSpacing(10)
         self.btn_region = QPushButton("框选区域")
         self.btn_region.clicked.connect(self.select_region)
+        self.btn_window = QPushButton("按窗口搜题")
+        self.btn_window.setCursor(Qt.PointingHandCursor)
+        self.btn_window.clicked.connect(self.pick_window)
         self.btn_start = QPushButton("开始")
         self.btn_start.setObjectName("primary")
         self.btn_start.setCursor(Qt.PointingHandCursor)
@@ -4510,6 +4582,7 @@ class MainWindow(QWidget):
         self.btn_shot = QPushButton("立即识别")
         self.btn_shot.clicked.connect(self.shot_once)
         row1.addWidget(self.btn_region)
+        row1.addWidget(self.btn_window)
         row1.addWidget(self.btn_start)
         row1.addWidget(self.btn_shot)
         row1.addStretch(1)
@@ -5015,6 +5088,14 @@ class MainWindow(QWidget):
         self.log.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {text}")
 
     def update_region_label(self):
+        if self.cfg.get("src") == "window" and self.cfg.get("win_hwnd"):
+            t = (self.cfg.get("win_title") or "窗口").strip()
+            self.region_label.setText("窗口：" + (t[:14] + "…" if len(t) > 14 else t))
+            self.region_label.setToolTip("监控窗口：" + t)
+            self.region_label.setStyleSheet(
+                "color:#b9a4ff;background:rgba(124,92,255,30);border-radius:9px;"
+                "padding:2px 8px;font-size:10.5px;")
+            return
         if self.region and self.region.get("width"):
             r = self.region
             self.region_label.setText(f"{r['width']}×{r['height']}")
@@ -5084,11 +5165,35 @@ class MainWindow(QWidget):
     def _on_region(self, r):
         self.region = r
         self.cfg["region"] = r
+        self.cfg["src"] = "region"
+        self.cfg.pop("win_hwnd", None)
+        self.cfg.pop("win_title", None)
         config_store.save(self.cfg)
         self.update_region_label()
         self.show()
         self.add_log(f"已框选：{r['width']}×{r['height']} @ ({r['left']},{r['top']})")
         self.set_state("区域已设置", COLOR_OK)
+
+    def pick_window(self):
+        try:
+            wins = remote_server.list_windows()
+        except Exception as e:
+            self.add_log("枚举窗口失败：%s" % e)
+            return
+        if not wins:
+            self.add_log("没找到可选窗口（都被过滤或都最小化了）")
+            return
+        dlg = WindowPicker(self, wins)
+        if dlg.exec_() != QDialog.Accepted or not dlg.chosen:
+            return
+        w = dlg.chosen
+        self.cfg["src"] = "window"
+        self.cfg["win_hwnd"] = int(w["id"])
+        self.cfg["win_title"] = w.get("title") or ""
+        config_store.save(self.cfg)
+        self.update_region_label()
+        self.add_log("已选窗口：%s（%d×%d）" % (self.cfg["win_title"], w.get("w") or 0, w.get("h") or 0))
+        self.set_state("已选窗口，点「开始」", COLOR_OK)
 
     # -------- 运行
     def toggle_run(self):
@@ -5103,12 +5208,14 @@ class MainWindow(QWidget):
             self.set_state("未配置 API Key", COLOR_WARN)
             self.open_settings()
             return
-        if not self.region or not self.region.get("width"):
-            self.add_log("还没框选区域，先点「框选区域」")
-            self.set_state("未框选区域", COLOR_WARN)
-            return
+        hwnd = self.cfg.get("win_hwnd") if self.cfg.get("src") == "window" else 0
+        if not hwnd:
+            if not self.region or not self.region.get("width"):
+                self.add_log("还没框选区域，先点「框选区域」或「按窗口搜题」")
+                self.set_state("未选监控范围", COLOR_WARN)
+                return
 
-        self.worker = ScanWorker(self.cfg, self.region)
+        self.worker = ScanWorker(self.cfg, self.region, hwnd=hwnd)
         self.thread = QThread(self)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.loop)
