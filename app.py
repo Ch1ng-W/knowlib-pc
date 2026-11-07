@@ -1756,6 +1756,30 @@ class _OnlineFetch(QThread):
             self.bad.emit(str(e) or e.__class__.__name__)
 
 
+class _GradeThread(QThread):
+    """后台判分（填空/简答），不卡 UI。"""
+
+    ok = pyqtSignal(object)
+    bad = pyqtSignal(str)
+
+    def __init__(self, cfg, q, mine, parent=None):
+        super().__init__(parent)
+        self.cfg = dict(cfg or {})
+        self.q = q
+        self.mine = mine
+
+    def run(self):
+        try:
+            client = ocr_ai.AiClient(self.cfg)
+            r = client.grade_answer(self.q.get("stem"), self.q.get("answer"), self.mine)
+            if not r:
+                self.bad.emit("模型没按要求返回，再试一次")
+            else:
+                self.ok.emit(r)
+        except Exception as e:
+            self.bad.emit("%s: %s" % (type(e).__name__, e))
+
+
 class OnlinePage(QWidget):
     """在线试卷：粘分享链接 → 在 PC 里做题 → 一键收藏进本地题库。"""
 
@@ -1771,6 +1795,7 @@ class OnlinePage(QWidget):
         self.picked = {}          # 题号 -> 选过的 key
         self.saved = set()        # 已收藏的题号
         self._th = None
+        self._gth = None
         self._answer_open = False
 
         lay = QVBoxLayout(self)
@@ -1817,6 +1842,22 @@ class OnlinePage(QWidget):
         self.ans = QTextBrowser()
         self.ans.setVisible(False)
         right.addWidget(self.ans, 2)
+
+        # 填空/简答：自己写答案 → AI 判分
+        self.grade_row = QHBoxLayout()
+        self.grade_row.setSpacing(8)
+        self.mine = QLineEdit()
+        self.mine.setPlaceholderText("填空/简答题：在这里写你的答案，点「AI 判分」对比参考答案")
+        self.mine.returnPressed.connect(self.do_grade)
+        self.btn_grade = QPushButton("AI 判分")
+        self.btn_grade.clicked.connect(self.do_grade)
+        self.btn_grade.setMinimumWidth(88)
+        self.grade_row.addWidget(self.mine, 1)
+        self.grade_row.addWidget(self.btn_grade)
+        self.grade_hint = QLabel("")
+        self.grade_hint.setObjectName("sub")
+        self.grade_row.addWidget(self.grade_hint)
+        right.addLayout(self.grade_row)
 
         tools = QHBoxLayout()
         tools.setSpacing(8)
@@ -1912,6 +1953,13 @@ class OnlinePage(QWidget):
         self.row = row
         self._answer_open = False
         self.ans.setVisible(False)
+        self.mine.clear()
+        self.grade_hint.setText("")
+        show_grade = self.qs[row].get("type") in ("blank", "short")
+        for i in range(self.grade_row.count()):
+            w = self.grade_row.itemAt(i).widget()
+            if w is not None:
+                w.setVisible(show_grade)
         self._render()
 
     def _render(self):
@@ -1966,19 +2014,69 @@ class OnlinePage(QWidget):
         if self._answer_open:
             self._render_answer()
 
-    def _render_answer(self):
+    def _render_answer(self, grade=None):
         if self.row < 0:
             return
         q = self.qs[self.row]
         ans = (q.get("answer") or "").strip() or "（这道题没给答案）"
         sol = (q.get("analysis") or "").strip()
-        html = ("<div style='color:%s;font-size:12px;margin-bottom:4px'>答案</div>" % self._c["accent"]
+        head = ""
+        if grade:
+            sc = int(grade.get("score") or 0)
+            col = self._c["answer"] if sc >= 60 else "#d9534f"
+            head = ("<div style='font-size:15px;font-weight:700;color:%s;margin-bottom:8px'>"
+                    "AI 判分：%d 分 · %s</div>"
+                    % (col, sc, _html.escape(str(grade.get("verdict") or ""))))
+            if grade.get("comment"):
+                head += ("<div style='color:%s;font-size:13px;margin-bottom:10px'>%s</div>"
+                         % (self._c["muted"], _html.escape(str(grade["comment"]))))
+        html = (head
+                + "<div style='color:%s;font-size:12px;margin-bottom:4px'>答案</div>" % self._c["accent"]
                 + md_render.to_html(ans, color=self._c["answer"], font_size=17))
         if sol:
             html += ("<div style='color:%s;font-size:12px;margin:12px 0 4px'>解析</div>" % self._c["accent"]
                      + md_render.to_html(sol, color=self._c["text"], font_size=14))
         self.ans.setHtml(html)
         self.ans.verticalScrollBar().setValue(0)
+
+    # ---------------- 填空/简答判分
+    def do_grade(self):
+        if self.row < 0:
+            return
+        mine = self.mine.text().strip()
+        if not mine:
+            self.grade_hint.setText("先写你的答案")
+            return
+        q = self.qs[self.row]
+        ref = (q.get("answer") or "").strip()
+        if not (q.get("stem") or "").strip():
+            return
+        if ref and online_quiz.same_answer(ref, mine):
+            self.grade_hint.setText("与参考答案一致")
+            self._show_grade({"score": 100, "verdict": "对", "comment": "与参考答案一致", "cost": 0.0})
+            return
+        self.btn_grade.setEnabled(False)
+        self.grade_hint.setText("判分中…")
+        th = _GradeThread(config_store.load(), q, mine, self)
+        th.ok.connect(self._show_grade)
+        th.bad.connect(self._grade_err)
+        self._gth = th
+        th.start()
+
+    @safe_slot
+    def _show_grade(self, r):
+        self.btn_grade.setEnabled(True)
+        sc = int((r or {}).get("score") or 0)
+        c = (r or {}).get("comment") or ""
+        self.grade_hint.setText("%d 分%s" % (sc, (" · " + c) if c else ""))
+        self._answer_open = True
+        self.ans.setVisible(True)
+        self._render_answer(grade=r)
+
+    @safe_slot
+    def _grade_err(self, msg):
+        self.btn_grade.setEnabled(True)
+        self.grade_hint.setText("判分失败：" + (msg or ""))
 
     # ---------------- 收藏
     def _save_one(self, i):
@@ -2092,6 +2190,7 @@ class BankPage(QWidget):
         mp = QMenu(self.btn_paper)
         mp.addAction("组卷 → Markdown", lambda: self.make_paper("md"))
         mp.addAction("组卷 → PDF", lambda: self.make_paper("pdf"))
+        mp.addAction("组卷 → 在线分享链接", self.share_paper)
         self.btn_paper.setMenu(mp)
 
         self.btn_import = QPushButton("导入题库")
@@ -2300,6 +2399,90 @@ class BankPage(QWidget):
             return
         qbank.clear()
         self.reload()
+
+    def _items_to_doc(self, items, title):
+        """把题库条目拼成服务器认的试卷 JSON。"""
+        import paper_export as pe
+        tmap = {"选择题": "choice", "判断题": "judge", "填空题": "blank",
+                "简答题": "short", "计算题": "short"}
+        qs = []
+        for it in items:
+            qtext = it.get("q_text") or ""
+            ans = (it.get("answer") or "").strip()
+            sol = (it.get("solution") or "").strip()
+            tname = pe.detect_type(qtext, ans)
+            qtype = tmap.get(tname, "short")
+            try:
+                stem, opts = pe.parse_options(qtext)
+            except Exception:
+                stem, opts = "", []
+            if not opts:
+                _stem2, _opts2 = online_quiz.parse_options_inline(qtext)
+                if _opts2:
+                    stem, opts = _stem2, _opts2
+                    if tname not in ("选择题", "判断题"):
+                        tname, qtype = "选择题", "choice"
+            if not stem:
+                try:
+                    stem = pe.clean_stem(qtext) or qtext
+                except Exception:
+                    stem = qtext
+            if qtype == "judge" and ans in ("正确", "错误"):
+                ans = "对" if ans == "正确" else "错"
+            score = float(it.get("score") or 0) or (2.0 if qtype in ("choice", "judge", "blank") else 5.0)
+            qs.append({
+                "type": qtype, "typeName": tname, "stem": stem,
+                "score": score,
+                "options": [{"label": k, "text": t} for k, t in (opts or [])],
+                "answer": ans, "answerMd": ans, "analysis": sol,
+                "img": "", "imgW": 0, "imgH": 0,
+            })
+        total = sum(q["score"] for q in qs)
+        return {"title": title, "total": total, "used": "0 \u5206 0 \u79d2", "logo": "",
+                "author": "", "exam": {"enabled": False}, "questions": qs}
+
+    def share_paper(self):
+        """组卷 → 上传到 knowlib.fun → 拿到在线分享链接。"""
+        items = self._checked_items()
+        if not items:
+            self.stat.setText("先勾选要分享的题目")
+            return
+        title, ok = QInputDialog.getText(self, "在线分享", "试卷标题：",
+                                         text="%s 组卷" % time.strftime("%Y-%m-%d"))
+        if not ok:
+            return
+        title = (title or "").strip() or "组卷"
+        self.stat.setText("正在生成在线试卷…")
+        try:
+            doc = self._items_to_doc(items, title)
+            url = online_quiz.share(doc, author="PC-" + (os.environ.get("COMPUTERNAME") or ""))
+        except Exception as e:
+            self.stat.setText("生成链接失败：%s" % e)
+            return
+        self.stat.setText("已生成在线试卷 ✓")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("在线试卷已生成")
+        dlg.resize(520, 200)
+        v = QVBoxLayout(dlg)
+        tip = QLabel("把链接发给同学，手机/电脑都能直接打开：")
+        v.addWidget(tip)
+        le = QLineEdit(url)
+        le.setReadOnly(True)
+        le.selectAll()
+        v.addWidget(le)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        bcopy = QPushButton("复制链接")
+        bopen = QPushButton("在浏览器打开")
+        bok = QPushButton("完成")
+        row.addWidget(bcopy)
+        row.addWidget(bopen)
+        row.addWidget(bok)
+        v.addLayout(row)
+        bcopy.clicked.connect(lambda: (QApplication.clipboard().setText(url), tip.setText("已复制 ✓")))
+        bopen.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        bok.clicked.connect(dlg.accept)
+        dlg.exec_()
 
     def make_paper(self, fmt="md"):
         """组卷：把勾选的题拼成一张带标题的卷子（MD / PDF）。"""

@@ -112,3 +112,80 @@ def correct_key(q):
         return _judge_key(q.get("answer"))
     m = re.match(r"^\s*([A-Ha-h])", q.get("answer") or "")
     return m.group(1).upper() if m else ""
+
+
+# ---------------------------------------------------------------- 判分 / 分享
+_PUNCT = re.compile(r"[\s\u3000，。、；：？！“”‘’（）()\[\]【】《》,.!?;:'\"`]+")
+
+
+def norm_answer(s):
+    t = (s or "").strip().lower()
+    t = t.replace("×", "x").replace("÷", "/").replace("＝", "=")
+    t = _PUNCT.sub("", t)
+    # 判断题：正确/√/对 → 对；错误/×/错 → 错
+    if t in ("正确", "对", "√"):
+        return "对"
+    if t in ("错误", "错", "×", "x"):
+        return "错"
+    return t
+
+
+def same_answer(ref, mine):
+    """本地快速判定（完全一致 / 数值等价）。"""
+    a0, b0 = (ref or "").strip(), (mine or "").strip()
+    if not a0 or not b0:
+        return False
+    # 先试数值（避免 0.5 被标点清理成 05）
+    try:
+        from fractions import Fraction
+
+        def _num(x):
+            s = x.replace(" ", "").replace("\u3000", "")
+            s = s.replace("×", "*").replace("÷", "/").replace("＝", "=")
+            if s.endswith("%"):
+                return float(s[:-1]) / 100.0
+            try:
+                return float(Fraction(s))
+            except Exception:
+                try:
+                    return float(s)
+                except Exception:
+                    return None
+
+        na, nb = _num(a0), _num(b0)
+        if na is not None and nb is not None and abs(na - nb) < 1e-9:
+            return True
+    except Exception:
+        pass
+    a, b = norm_answer(a0), norm_answer(b0)
+    return bool(a and b and a == b)
+
+
+def parse_options_inline(text):
+    """选择题写在同一行时的兜底解析："题干 A．甲 B．乙 C．丙"。"""
+    marks = list(re.finditer(r"(?:^|\s)([A-H])\s*[．.、)）:：]\s*", text or ""))
+    if len(marks) < 2:
+        return "", []
+    stem = (text or "")[:marks[0].start()].strip()
+    opts = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        opts.append((m.group(1), text[m.end():end].strip()))
+    return stem, opts
+
+
+def share(doc, author="", code="", timeout=25):
+    """把试卷传到 knowlib.fun 托管，返回短链接。"""
+    payload = json.dumps({
+        "doc": json.dumps(doc, ensure_ascii=False),
+        "author": author or "",
+        "code": code or "",
+    }, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        BASE + "/api/doc", data=payload,
+        headers={"Content-Type": "application/json; charset=utf-8", "User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        j = json.loads(r.read().decode("utf-8", "replace"))
+    if not j.get("ok"):
+        raise ValueError(j.get("message") or "上传失败")
+    return j.get("short") or (BASE + "/s/" + str(j.get("code") or ""))

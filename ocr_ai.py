@@ -187,3 +187,47 @@ class AiClient:
             if on_state:
                 on_state(f"出错：{type(e).__name__}: {e}")
             raise
+
+    def grade_answer(self, question, reference, mine):
+        """给填空/简答判分。返回 {score(0-100), verdict, comment} 或 None。"""
+        import json as _json
+        import re as _re
+        cfg = self.cfg
+        sys_p = (
+            "你是严格的阅卷老师。对比学生答案和参考答案，给 0-100 的得分。\n"
+            "规则：允许等价表述（近义词、单位换算、分数与小数、顺序不同、多写不扣分）；\n"
+            "完全正确=100；核心对但有漏/多余=60-90；方向对但不完整=30-59；错误或空白=0。\n"
+            '只输出一行 JSON，不要任何其他文字：{"score":0-100,"verdict":"对|基本对|不对","comment":"不超过40字"}'
+        )
+        user_p = "题目：%s\n\n参考答案：%s\n\n学生答案：%s" % (
+            (question or "").strip()[:800],
+            (reference or "").strip()[:800],
+            (mine or "").strip()[:400],
+        )
+        t0 = time.time()
+        c = self._client()
+        r = c.chat.completions.create(
+            model=cfg.get("model"),
+            messages=[{"role": "system", "content": sys_p},
+                      {"role": "user", "content": user_p}],
+            temperature=0,
+            max_tokens=200,
+        )
+        txt = (r.choices[0].message.content or "").strip()
+        m = _re.search(r"\{[\s\S]*\}", txt)
+        if not m:
+            return None
+        try:
+            j = _json.loads(m.group(0))
+        except Exception:
+            return None
+        try:
+            score = max(0, min(100, int(float(j.get("score")) or 0)))
+        except Exception:
+            score = 0
+        return {
+            "score": score,
+            "verdict": str(j.get("verdict") or "").strip(),
+            "comment": str(j.get("comment") or "").strip(),
+            "cost": time.time() - t0,
+        }
