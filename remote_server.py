@@ -44,7 +44,9 @@ _HTML = r"""<!DOCTYPE html><html lang="zh-CN"><head>
 <style>
 :root{--bg:#f4f5f7;--card:#fff;--fg:#1b1b1b;--fg2:#6b7280;--line:#e5e7eb;--accent:#0067C0}
 @media (prefers-color-scheme:dark){:root{--bg:#141414;--card:#1f1f1f;--fg:#f2f2f2;--fg2:#a1a1a6;--line:#333;--accent:#4CC2FF}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 'Segoe UI','Microsoft YaHei UI',system-ui;padding:16px}
+*{box-sizing:border-box}html,body{max-width:100%;overflow-x:hidden}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 'Segoe UI','Microsoft YaHei UI',system-ui;padding:16px;word-break:break-word}
+select{max-width:100%;text-overflow:ellipsis}img,table{max-width:100%}
 .wrap{max-width:680px;margin:0 auto}h1{font-size:19px;margin:0 0 4px}
 .sub{color:var(--fg2);font-size:12.5px;margin-bottom:14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
@@ -128,7 +130,8 @@ function refresh(){
     var sel=$('win');sel.innerHTML='';
     var o=document.createElement('option');o.value='';o.textContent='全屏（主屏）';sel.appendChild(o);
     (r.j.windows||[]).forEach(function(w){
-      var x=document.createElement('option');x.value=w.id;x.textContent=w.title+'  ('+w.w+'×'+w.h+')';
+      var t=w.title.length>34?w.title.slice(0,34)+'…':w.title;
+      var x=document.createElement('option');x.value=w.id;x.textContent=t+'  ('+w.w+'×'+w.h+')'+(w.min?' · 已最小化':'');
       sel.appendChild(x);
     });
     if(r.j.target){sel.value=String(r.j.target);}
@@ -139,8 +142,11 @@ function pick(){
   api('/api/target',{method:'POST',body:JSON.stringify({win:$('win').value})}).then(function(){preview();});
 }
 function preview(){
-  $('prev').src='/api/preview?t='+encodeURIComponent(T)+'&win='+encodeURIComponent($('win').value)+'&_='+Date.now();
-  $('prev').classList.remove('hide');
+  var img=$('prev');
+  img.onerror=function(){ $('msg').textContent='预览失败（窗口可能已最小化/关闭）'; img.classList.add('hide'); };
+  img.onload=function(){ if(!img.naturalWidth){ $('msg').textContent='预览为空'; } };
+  img.src='/api/preview?t='+encodeURIComponent(T)+'&win='+encodeURIComponent($('win').value)+'&_='+Date.now();
+  img.classList.remove('hide');
 }
 function ask(){
   $('go').disabled=true;$('msg').textContent='正在截图识别…';$('ansCard').classList.add('hide');
@@ -156,7 +162,17 @@ function ask(){
     $('ansCard').classList.remove('hide');
   }).catch(function(e){$('go').disabled=false;$('msg').textContent='网络错误：'+e.message;});
 }
-function copyAns(){ if(!LAST)return; navigator.clipboard.writeText(LAST.answer||'').then(function(){$('msg').textContent='已复制';}); }
+function copyText(t){
+  if(navigator.clipboard && window.isSecureContext){ return navigator.clipboard.writeText(t); }
+  return new Promise(function(res,rej){
+    var ta=document.createElement('textarea'); ta.value=t; ta.style.position='fixed'; ta.style.top='0'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    var ok=false; try{ ok=document.execCommand('copy'); }catch(e){}
+    document.body.removeChild(ta);
+    ok?res():rej(new Error('copy failed'));
+  });
+}
+function copyAns(){ if(!LAST)return; copyText(LAST.answer||'').then(function(){$('msg').textContent='已复制';}).catch(function(){$('msg').textContent='复制失败，长按答案手动复制';}); }
 function saveBank(){ if(!LAST)return; api('/api/save',{method:'POST',body:JSON.stringify({q:LAST.q,a:LAST.answer})}).then(function(r){$('msg').textContent=r.j.ok?'已收藏到 PC 题库':'收藏失败';}); }
 boot();
 </script></body></html>"""
@@ -175,6 +191,7 @@ def list_windows():
             try:
                 if not user32.IsWindowVisible(hwnd):
                     return True
+                _min = bool(user32.IsIconic(hwnd))
                 _pid = wt.DWORD()
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(_pid))
                 if _pid.value == os.getpid():
@@ -196,7 +213,8 @@ def list_windows():
                 h = rect.bottom - rect.top
                 if w < 100 or h < 80 or rect.left <= -30000:
                     return True
-                out.append({"id": int(hwnd), "title": title[:80], "w": w, "h": h})
+                out.append({"id": int(hwnd), "title": title[:80], "w": w, "h": h,
+                            "min": _min})
             except Exception:
                 pass
             return True
@@ -265,6 +283,11 @@ def _capture_rect(rect):
 def capture(target):
     """target=None → 全屏；否则窗口句柄。"""
     if target:
+        try:
+            if user32.IsIconic(int(target)):
+                return None
+        except Exception:
+            pass
         img = _capture_hwnd(int(target))
         if img is not None:
             return img
@@ -420,7 +443,7 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return {"ok": False, "message": "截图失败：%s" % e}
         if img is None:
-            return {"ok": False, "message": "截图失败（窗口可能最小化了）"}
+            return {"ok": False, "message": "截图失败：这个窗口已最小化或已关闭，先在电脑上点开它"}
         try:
             if _CTX["engine"] is None:
                 _CTX["engine"] = ocr_ai.OcrEngine()

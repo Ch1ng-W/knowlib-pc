@@ -101,9 +101,7 @@ def latex_to_html(src, display=False):
                 b, i = _read_group(s, i)
                 ha = latex_to_html(a)
                 hb = latex_to_html(b)
-                out.append(
-                    f'<span style="white-space:nowrap"><sup style="font-size:82%">{ha}'
-                    f'</sup>⁄<sub style="font-size:82%">{hb}</sub></span>')
+                out.append(f'<span style="white-space:nowrap">{ha}/{hb}</span>')
                 continue
             if name == "sqrt":
                 idx = ""

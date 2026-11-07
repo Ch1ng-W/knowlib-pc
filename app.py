@@ -926,7 +926,8 @@ class SettingsPage(QWidget):
         c2.addWidget(t2)
 
         tip2 = QLabel("两端（或多端）填同一个同步码，就能拿到同一份题库和搜题记录。"
-                      "新设备直接输码；没装 App 的手机可以用网页版。")
+                      "新设备直接输码；没装 App 的手机可以用网页版。\n"
+                      "同步码和密钥保存在本机，填一次就行，之后自动同步；换设备时把这两个值填过去即可。")
         tip2.setObjectName("sub")
         tip2.setWordWrap(True)
         c2.addWidget(tip2)
@@ -2597,6 +2598,376 @@ class OnlinePage(QWidget):
             self._on_back()
 
 
+
+class _DashPanel(QWidget):
+    """试卷后台（内嵌面板，不开新窗口）。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.code = ""
+        self.key = ""
+        self._th = None
+        self._c = theme_colors(getattr(parent, "theme", LIGHT))
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(10)
+
+        row = QHBoxLayout()
+        self.pick = WinCombo()
+        self.pick.setMinimumWidth(240)
+        self.pick.activated[int].connect(self._on_pick)
+        row.addWidget(self.pick, 1)
+        self.btn = QPushButton("刷新")
+        self.btn.clicked.connect(self.reload)
+        row.addWidget(self.btn)
+        self.chk = QCheckBox("自动刷新（20 秒）")
+        self.chk.setChecked(True)
+        self.chk.toggled.connect(self._toggle)
+        row.addWidget(self.chk)
+        v.addLayout(row)
+
+        self.lbl = QLabel("选一份试卷看数据")
+        self.lbl.setObjectName("sub")
+        v.addWidget(self.lbl)
+
+        self.view = QTextBrowser()
+        v.addWidget(self.view, 1)
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(20000)
+        self.timer.timeout.connect(self.reload)
+        self._reload_papers()
+
+    def _reload_papers(self):
+        self.pick.blockSignals(True)
+        self.pick.clear()
+        papers = dict(config_store.load().get("papers") or {})
+        if not papers:
+            self.pick.addItem("（还没有发布过在线试卷）", "")
+        else:
+            rows = sorted(papers.items(), key=lambda kv: kv[1].get("t", 0), reverse=True)
+            for code, info in rows:
+                self.pick.addItem("《%s》 %s" % (info.get("title") or "未命名", code),
+                                  (code, info.get("key") or ""))
+        self.pick.blockSignals(False)
+        if self.pick.count():
+            self._on_pick(0)
+
+    def _on_pick(self, idx):
+        data = self.pick.itemData(idx)
+        if not data:
+            return
+        self.code, self.key = data[0], data[1]
+        self.reload()
+
+    def _toggle(self, on):
+        if on:
+            self.timer.start()
+        else:
+            self.timer.stop()
+
+    def reload(self):
+        if not self.code:
+            return
+        if self._th is not None and self._th.isRunning():
+            return
+        self.btn.setEnabled(False)
+        th = _DashFetch(self.code, self.key, self)
+        th.ok.connect(self._on_data)
+        th.bad.connect(self._on_err)
+        self._th = th
+        th.start()
+
+    @safe_slot
+    def _on_err(self, msg):
+        self.btn.setEnabled(True)
+        self.lbl.setText("加载失败：" + msg)
+
+    @safe_slot
+    def _on_data(self, j):
+        self.btn.setEnabled(True)
+        if not j.get("ok"):
+            self.lbl.setText("加载失败" if j.get("message") != "no doc" else "找不到这份试卷")
+            return
+        c = self._c
+        s = j.get("summary") or {}
+        self.lbl.setText("《%s》 共 %s 题 · 浏览 %s · 作答 %s 人 / %s 次" % (
+            j.get("title") or "", j.get("questions") or 0, s.get("views") or 0,
+            s.get("users") or 0, s.get("attempts") or 0))
+
+        def fmt(ts):
+            return time.strftime("%m-%d %H:%M", time.localtime(ts / 1000.0)) if ts else "-"
+
+        def dur(sec):
+            sec = int(sec or 0)
+            if sec <= 0:
+                return "-"
+            return ("%d 秒" % sec) if sec < 60 else ("%d 分 %d 秒" % (sec // 60, sec % 60))
+
+        cards = [("浏览量", s.get("views") or 0), ("访客", s.get("visitors") or 0),
+                 ("作答人数", s.get("users") or 0), ("作答次数", s.get("attempts") or 0),
+                 ("平均分", "%s / %s" % (s.get("avgScore") or 0, j.get("total") or "-")),
+                 ("平均用时", dur(s.get("avgDur")))]
+        h = ["<div style='font-family:Microsoft YaHei UI'>"]
+        h.append("<table cellspacing=6><tr>")
+        for k, val in cards:
+            h.append("<td style='padding:8px 14px;border:1px solid #ddd;border-radius:8px'>"
+                     "<div style='font-size:11px;color:%s'>%s</div>"
+                     "<div style='font-size:18px;font-weight:700'>%s</div></td>" % (c["muted"], k, val))
+        h.append("</tr></table>")
+
+        h.append("<div style='font-size:13px;font-weight:600;margin:12px 0 4px'>作答的人</div>")
+        h.append("<table width='100%' cellspacing=0 cellpadding=5>")
+        h.append("<tr style='color:%s;font-size:11px'><td>设备</td><td>次数</td><td>首次</td>"
+                 "<td>最近</td><td>均分</td><td>最高</td><td>用时</td></tr>" % c["muted"])
+        for u in (j.get("users") or []):
+            tag = " <span style='color:#d9534f'>(已排除)</span>" if u.get("ex") else ""
+            h.append("<tr style='border-top:1px solid #eee'><td>%s<br><span style='font-size:11px;color:%s'>%s</span>%s</td>"
+                     "<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                         u.get("uid") or "-", c["muted"], u.get("device") or "", tag,
+                         u.get("count") or 0, fmt(u.get("first")), fmt(u.get("last")),
+                         u.get("avg") or 0, u.get("best") or 0, dur(u.get("avgDur"))))
+        if not (j.get("users") or []):
+            h.append("<tr><td colspan=7 style='color:%s'>还没有人作答</td></tr>" % c["muted"])
+        h.append("</table>")
+        self.view.setHtml("".join(h))
+
+
+class PaperHubPage(QWidget):
+    """试卷主页面：在线试卷 / 历史试卷 / 试卷后台 / 组卷。"""
+
+    TABS = (("online", "在线试卷"), ("hist", "历史试卷"),
+            ("dash", "试卷后台"), ("compose", "组卷"))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("paperPage")
+        self.setStyleSheet("")
+        self._c = theme_colors(getattr(parent, "theme", LIGHT))
+        self._parent = parent
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        self.btn_tabs = {}
+        for key, text in self.TABS:
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setProperty("cls", "tab")
+            b.clicked.connect(lambda _=False, k=key: self.show_tab(k))
+            bar.addWidget(b)
+            self.btn_tabs[key] = b
+        bar.addStretch(1)
+        lay.addLayout(bar)
+
+        self.stack = QStackedWidget()
+        lay.addWidget(self.stack, 1)
+
+        # 在线试卷
+        self.online = OnlinePage(self)
+        self.stack.addWidget(self.online)
+
+        # 历史试卷
+        self.pane_hist = QWidget()
+        vh = QVBoxLayout(self.pane_hist)
+        vh.setContentsMargins(0, 0, 0, 0)
+        vh.setSpacing(8)
+        self.hist = QListWidget()
+        self.hist.itemDoubleClicked.connect(lambda _i: self.open_hist())
+        vh.addWidget(self.hist, 1)
+        rh = QHBoxLayout()
+        rh.addStretch(1)
+        b1 = QPushButton("打开试卷")
+        b2 = QPushButton("看后台")
+        b3 = QPushButton("复制链接")
+        b1.clicked.connect(self.open_hist)
+        b2.clicked.connect(self.hist_dash)
+        b3.clicked.connect(self.copy_hist)
+        for b in (b1, b2, b3):
+            rh.addWidget(b)
+        vh.addLayout(rh)
+        self.stack.addWidget(self.pane_hist)
+
+        # 试卷后台
+        self.dash = _DashPanel(self)
+        self.stack.addWidget(self.dash)
+
+        # 组卷
+        self.pane_compose = QWidget()
+        vc = QVBoxLayout(self.pane_compose)
+        vc.setContentsMargins(0, 0, 0, 0)
+        vc.setSpacing(8)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("试卷标题"))
+        self.paper_title = QLineEdit()
+        self.paper_title.setPlaceholderText("例：液压泵章节练习")
+        top.addWidget(self.paper_title, 1)
+        vc.addLayout(top)
+        self.qlist = QListWidget()
+        vc.addWidget(self.qlist, 1)
+        rc = QHBoxLayout()
+        self.chk_all = QCheckBox("全选")
+        self.chk_all.toggled.connect(self._check_all)
+        rc.addWidget(self.chk_all)
+        rc.addStretch(1)
+        bmd = QPushButton("导出 Markdown")
+        bpdf = QPushButton("导出 PDF")
+        blin = QPushButton("在线分享链接")
+        blin.setObjectName("primary")
+        bmd.clicked.connect(lambda: self.make_paper("md"))
+        bpdf.clicked.connect(lambda: self.make_paper("pdf"))
+        blin.clicked.connect(self.share_paper)
+        for b in (bmd, bpdf, blin):
+            rc.addWidget(b)
+        vc.addLayout(rc)
+        self.compose_stat = QLabel("")
+        self.compose_stat.setObjectName("sub")
+        vc.addWidget(self.compose_stat)
+        self.stack.addWidget(self.pane_compose)
+
+        self._tab = "online"
+        self.show_tab("online")
+
+    # ---------- tabs
+    def show_tab(self, key):
+        self._tab = key
+        for k, b in self.btn_tabs.items():
+            b.setChecked(k == key)
+        idx = {"online": 0, "hist": 1, "dash": 2, "compose": 3}.get(key, 0)
+        self.stack.setCurrentIndex(idx)
+        if key == "hist":
+            self.reload_hist()
+        elif key == "compose":
+            self.reload_bank()
+        elif key == "dash":
+            self.dash._reload_papers()
+
+    # ---------- 在线试卷
+    def open_online(self, code):
+        self.show_tab("online")
+        self.online.load_code(code)
+
+    # ---------- 历史试卷
+    def reload_hist(self):
+        self.hist.clear()
+        papers = dict(config_store.load().get("papers") or {})
+        if not papers:
+            it = QListWidgetItem("还没有发布过在线试卷（去「组卷」发一份）")
+            it.setFlags(Qt.NoItemFlags)
+            self.hist.addItem(it)
+            return
+        rows = sorted(papers.items(), key=lambda kv: kv[1].get("t", 0), reverse=True)
+        for code, info in rows:
+            t = info.get("t") or 0
+            when = time.strftime("%m-%d %H:%M", time.localtime(t / 1000.0)) if t else ""
+            it = QListWidgetItem("《%s》  %s  %s" % (info.get("title") or "未命名", code, when))
+            it.setData(Qt.UserRole, (code, info.get("key") or "", info.get("title") or ""))
+            self.hist.addItem(it)
+
+    def _hist_sel(self):
+        it = self.hist.currentItem()
+        return (it.data(Qt.UserRole) if it else None) or ("", "", "")
+
+    def open_hist(self):
+        code = self._hist_sel()[0]
+        if code:
+            QDesktopServices.openUrl(QUrl(online_quiz.BASE + "/s/" + code))
+
+    def hist_dash(self):
+        code, key, title = self._hist_sel()
+        if code:
+            self.show_tab("dash")
+            idx = self.dash.pick.findData((code, key))
+            if idx >= 0:
+                self.dash.pick.setCurrentIndex(idx)
+                self.dash._on_pick(idx)
+
+    def copy_hist(self):
+        code = self._hist_sel()[0]
+        if code:
+            QApplication.clipboard().setText(online_quiz.BASE + "/s/" + code)
+            self.hist.setToolTip("已复制")
+
+    # ---------- 组卷
+    def reload_bank(self):
+        self.qlist.clear()
+        for it in qbank.items(limit=800):
+            q1 = " ".join((it["q_text"] or "").split())[:44] or "（无题目）"
+            item = QListWidgetItem(q1)
+            item.setData(Qt.UserRole, it)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.qlist.addItem(item)
+        if self.qlist.count() == 0:
+            it = QListWidgetItem("题库是空的，先去搜几道题")
+            it.setFlags(Qt.NoItemFlags)
+            self.qlist.addItem(it)
+        self.compose_stat.setText("共 %d 题" % self.qlist.count())
+
+    def _check_all(self, on):
+        for i in range(self.qlist.count()):
+            it = self.qlist.item(i)
+            if it.flags() & Qt.ItemIsUserCheckable:
+                it.setCheckState(Qt.Checked if on else Qt.Unchecked)
+
+    def _checked(self):
+        out = []
+        for i in range(self.qlist.count()):
+            it = self.qlist.item(i)
+            if (it.flags() & Qt.ItemIsUserCheckable) and it.checkState() == Qt.Checked:
+                out.append(it.data(Qt.UserRole) or {})
+        return out
+
+    def _bank_page(self):
+        """借用 BankPage 的 doc 构造/分享逻辑。"""
+        return getattr(self._parent, "page_bank", None)
+
+    def make_paper(self, fmt):
+        items = self._checked()
+        if not items:
+            self.compose_stat.setText("先勾选题目")
+            return
+        bp = self._bank_page()
+        if bp is None:
+            return
+        title = (self.paper_title.text() or "").strip() or (time.strftime("%Y-%m-%d") + " 组卷")
+        from PyQt5.QtWidgets import QFileDialog
+        import paper_export
+        ext = "md" if fmt == "md" else "pdf"
+        safe = re.sub(r'[\\/:*?"<>|]', "-", title)
+        fp, _ = QFileDialog.getSaveFileName(self, "保存试卷", "%s.%s" % (safe, ext),
+                                            "Markdown (*.md)" if fmt == "md" else "PDF (*.pdf)")
+        if not fp:
+            return
+        try:
+            if fmt == "md":
+                md = paper_export.build_md(items, title=title, with_answer=True)
+                with open(fp, "w", encoding="utf-8") as f:
+                    f.write(md)
+            else:
+                paper_export.export_pdf(items, fp, title=title, with_answer=True)
+            self.compose_stat.setText("已导出 → %s" % os.path.basename(fp))
+        except Exception as e:
+            self.compose_stat.setText("导出失败：%s" % e)
+
+    def share_paper(self):
+        items = self._checked()
+        if not items:
+            self.compose_stat.setText("先勾选题目")
+            return
+        bp = self._bank_page()
+        if bp is None:
+            return
+        # 复用 BankPage 的分享流程（它自带标题弹窗与后台密钥）
+        bp._checked_items = lambda: items  # 临时覆盖，走同一套逻辑
+        bp.share_paper()
+
+
 class BankPage(QWidget):
     """本地题库：检索 / 复制 / 删除 / 导入导出（内嵌在主窗口里）。"""
 
@@ -3681,7 +4052,7 @@ class MainWindow(QWidget):
         self.nav = {}
         self._nav_text = {}
         for key, icon, text in (("home", "\ue721", "答题"),
-                                ("online", "\ue774", "在线试卷"),
+                                ("online", "\ue774", "试卷"),
                                 ("history", "\ue81c", "历史记录"),
                                 ("bank", "\ue8f1", "题库"),
                                 ("settings", "\ue713", "设置"),
@@ -3827,7 +4198,7 @@ class MainWindow(QWidget):
         # ---- 其他页面
         self.stack.addWidget(self.page_home)
         self.page_history = HistoryPage(self, on_back=lambda: self.show_page("home"))
-        self.page_online = OnlinePage(self, on_back=lambda: self.show_page("home"))
+        self.page_paper = PaperHubPage(self)
         self.page_bank = BankPage(self, on_back=lambda: self.show_page("home"))
         self.page_settings = SettingsPage(self.cfg, self, on_saved=self._on_settings_saved,
                                           on_back=lambda: self.show_page("home"))
@@ -3838,7 +4209,7 @@ class MainWindow(QWidget):
         self.page_settings_scroll.setFrameShape(QFrame.NoFrame)
         self.page_settings_scroll.setWidget(self.page_settings)
         self.page_about = AboutPage(self, on_check=self._about_check)
-        for p in (self.page_history, self.page_online, self.page_bank,
+        for p in (self.page_history, self.page_paper, self.page_bank,
                   self.page_settings_scroll, self.page_about):
             self.stack.addWidget(p)
         self.stack.setCurrentWidget(self.page_home)
@@ -3882,7 +4253,7 @@ class MainWindow(QWidget):
 
     def _show_page(self, name, animate=True):
         page = {"home": self.page_home, "history": self.page_history,
-                "online": getattr(self, "page_online", None),
+                "online": getattr(self, "page_paper", None),
                 "bank": self.page_bank,
                 "settings": getattr(self, "page_settings_scroll", self.page_settings),
                 "about": getattr(self, "page_about", None)}.get(name)
@@ -4520,7 +4891,17 @@ class MainWindow(QWidget):
         """收起左侧导航：只留图标（再点一次展开）。"""
         self._side_collapsed = not getattr(self, "_side_collapsed", False)
         try:
-            self.side.setFixedWidth(58 if self._side_collapsed else 196)
+            start = self.side.width()
+            end = 58 if self._side_collapsed else 196
+            a1 = QPropertyAnimation(self.side, b"minimumWidth", self)
+            a2 = QPropertyAnimation(self.side, b"maximumWidth", self)
+            for a in (a1, a2):
+                a.setDuration(220)
+                a.setStartValue(start)
+                a.setEndValue(end)
+                a.setEasingCurve(QEasingCurve.OutCubic)
+                a.start(QAbstractAnimation.DeleteWhenStopped)
+            self._side_anims = (a1, a2)
         except Exception:
             pass
         for k, b in self.nav.items():
@@ -4546,7 +4927,7 @@ class MainWindow(QWidget):
             return
         self.show_page("online")
         try:
-            self.page_online.load_code(code)
+            self.page_paper.open_online(code)
         except Exception:
             traceback.print_exc()
         self.show_main()
