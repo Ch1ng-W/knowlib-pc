@@ -12,7 +12,7 @@ import sys
 APP_NAME = "XiaoTuanSouTi"      # 旧目录名，仅用于迁移
 BRAND = "Knowlib"               # 新数据目录名
 REG_NAME = "Knowlib"            # 开机自启的注册表项名
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.4.8"
 
 DATA_FILES = ("config.json", "bank.db", "history.jsonl")
 

@@ -175,7 +175,6 @@ def parse_options_inline(text):
 
 
 def share(doc, author="", code="", timeout=25):
-    """把试卷传到 knowlib.fun 托管，返回短链接。"""
     payload = json.dumps({
         "doc": json.dumps(doc, ensure_ascii=False),
         "author": author or "",
@@ -189,3 +188,14 @@ def share(doc, author="", code="", timeout=25):
     if not j.get("ok"):
         raise ValueError(j.get("message") or "上传失败")
     return j.get("short") or (BASE + "/s/" + str(j.get("code") or ""))
+
+
+def claim_owner(code, key, timeout=15):
+    """给试卷认领作者密钥（第一次调用生效，后面只校验）。"""
+    payload = json.dumps({"code": code, "key": key}).encode("utf-8")
+    req = urllib.request.Request(
+        BASE + "/api/owner", data=payload,
+        headers={"Content-Type": "application/json; charset=utf-8", "User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        j = json.loads(r.read().decode("utf-8", "replace"))
+    return bool(j.get("ok"))

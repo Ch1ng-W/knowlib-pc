@@ -2191,6 +2191,7 @@ class BankPage(QWidget):
         mp.addAction("组卷 → Markdown", lambda: self.make_paper("md"))
         mp.addAction("组卷 → PDF", lambda: self.make_paper("pdf"))
         mp.addAction("组卷 → 在线分享链接", self.share_paper)
+        mp.addAction("试卷后台…", self.open_dash)
         self.btn_paper.setMenu(mp)
 
         self.btn_import = QPushButton("导入题库")
@@ -2460,9 +2461,29 @@ class BankPage(QWidget):
             self.stat.setText("生成链接失败：%s" % e)
             return
         self.stat.setText("已生成在线试卷 ✓")
+        # 作者密钥：以后看后台要它（存在本地 config，丢了就只能重建）
+        import secrets
+        code = online_quiz.code_from(url) or ""
+        owner_key = "".join(secrets.choice("abcdefghjkmnpqrstuvwxyz23456789") for _ in range(8))
+        claimed = False
+        try:
+            claimed = online_quiz.claim_owner(code, owner_key) if code else False
+        except Exception:
+            claimed = False
+        if claimed:
+            try:
+                cfg = config_store.load()
+                papers = cfg.get("papers") or {}
+                papers[code] = {"key": owner_key, "title": title, "t": int(time.time())}
+                cfg["papers"] = papers
+                config_store.save(cfg)
+            except Exception:
+                pass
+        dash_url = online_quiz.BASE + "/dash.html#" + code
+
         dlg = QDialog(self)
         dlg.setWindowTitle("在线试卷已生成")
-        dlg.resize(520, 200)
+        dlg.resize(560, 300)
         v = QVBoxLayout(dlg)
         tip = QLabel("把链接发给同学，手机/电脑都能直接打开：")
         v.addWidget(tip)
@@ -2470,18 +2491,79 @@ class BankPage(QWidget):
         le.setReadOnly(True)
         le.selectAll()
         v.addWidget(le)
+
+        v.addWidget(QLabel("试卷后台（看谁做了、做了几次、用了多久）："))
+        dle = QLineEdit(dash_url)
+        dle.setReadOnly(True)
+        v.addWidget(dle)
+        if claimed:
+            v.addWidget(QLabel("作者密钥（后台要用，请存好）："))
+            kle = QLineEdit(owner_key)
+            kle.setReadOnly(True)
+            v.addWidget(kle)
+        else:
+            note = QLabel("（后台密钥没认领成功：这份卷子可能已经被别人认领，或网络不通）")
+            note.setObjectName("sub")
+            note.setWordWrap(True)
+            v.addWidget(note)
+
         row = QHBoxLayout()
         row.addStretch(1)
         bcopy = QPushButton("复制链接")
-        bopen = QPushButton("在浏览器打开")
+        bkey = QPushButton("复制密钥")
+        bdash = QPushButton("打开后台")
         bok = QPushButton("完成")
-        row.addWidget(bcopy)
+        for b in (bcopy, bkey, bdash, bok):
+            row.addWidget(b)
+        v.addLayout(row)
+        bcopy.clicked.connect(lambda: (QApplication.clipboard().setText(url), tip.setText("链接已复制 ✓")))
+        bkey.clicked.connect(lambda: (QApplication.clipboard().setText(owner_key), tip.setText("密钥已复制 ✓")))
+        bdash.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(dash_url)))
+        bok.clicked.connect(dlg.accept)
+        dlg.exec_()
+
+    def open_dash(self):
+        """已生成的在线试卷 → 直接打开后台。"""
+        cfg = config_store.load()
+        papers = dict(cfg.get("papers") or {})
+        if not papers:
+            self.stat.setText("还没生成过在线试卷（先组卷 → 在线分享链接）")
+            return
+        rows = sorted(papers.items(), key=lambda kv: kv[1].get("t", 0), reverse=True)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("试卷后台")
+        dlg.resize(560, 360)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("选一份试卷："))
+        lw = QListWidget()
+        for code, info in rows:
+            it = QListWidgetItem("《%s》 %s" % (info.get("title") or "未命名", code))
+            it.setData(Qt.UserRole, (code, info.get("key") or ""))
+            lw.addItem(it)
+        v.addWidget(lw, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        bopen = QPushButton("打开后台")
+        bkey = QPushButton("复制密钥")
+        bok = QPushButton("关闭")
         row.addWidget(bopen)
+        row.addWidget(bkey)
         row.addWidget(bok)
         v.addLayout(row)
-        bcopy.clicked.connect(lambda: (QApplication.clipboard().setText(url), tip.setText("已复制 ✓")))
-        bopen.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+
+        def _sel():
+            it = lw.currentItem()
+            return it.data(Qt.UserRole) if it else ("", "")
+
+        bopen.clicked.connect(lambda: (
+            QDesktopServices.openUrl(QUrl(online_quiz.BASE + "/dash.html#" + _sel()[0]))))
+        bkey.clicked.connect(lambda: (
+            QApplication.clipboard().setText(_sel()[1]),
+            self.stat.setText("密钥已复制")))
         bok.clicked.connect(dlg.accept)
+        lw.itemDoubleClicked.connect(lambda _i: bopen.click())
+        if lw.count():
+            lw.setCurrentRow(0)
         dlg.exec_()
 
     def make_paper(self, fmt="md"):
