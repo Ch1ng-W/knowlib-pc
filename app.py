@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QDialog, QLineEdit, QComboBox, QFormLayout, QMessageBox,
     QTextBrowser, QCheckBox, QSpinBox, QSizePolicy, QFrame, QMenu, QAction, QGridLayout,
     QListWidget, QListWidgetItem, QSystemTrayIcon, QStyle, QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect, QStackedWidget, QScrollArea, QSlider,
+    QGraphicsOpacityEffect, QStackedWidget, QScrollArea, QSlider, QInputDialog,
 )
 
 import config_store
@@ -284,6 +284,123 @@ class RegionSelector(QWidget):
 
 
 # ---------------------------------------------------------------- 答案浮窗
+def _err_log_path():
+    try:
+        return os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"),
+                            "Knowlib", "error.log")
+    except Exception:
+        return None
+
+
+def safe_slot(fn):
+    """包住 Qt 槽函数：PyQt5 里槽里抛未捕获异常会直接 abort（0xc0000409），
+    包一层就能把 traceback 写进 error.log，并且不让软件闪退。"""
+    import functools
+
+    @functools.wraps(fn)
+    def _wrapped(*a, **k):
+        try:
+            return fn(*a, **k)
+        except Exception:
+            p = _err_log_path()
+            try:
+                with open(p, "a", encoding="utf-8") as f:
+                    f.write("\n--- %s %s ---\n" % (time.strftime("%H:%M:%S"), fn.__qualname__))
+                    f.write(traceback.format_exc())
+            except Exception:
+                pass
+            return None
+
+    return _wrapped
+
+
+# ---------------------------------------------------------------- 答案解析拆分
+_LBL_JX = re.compile(
+    r"[*_#>\s]*(?:[\[【]\s*解\s*析\s*[\]】][*_#>\s]*[:：]?"
+    r"|解\s*析[*_#>\s]*[:：])[*_#>\s]*")
+_LBL_ANS = re.compile(
+    r"[*_#>\s]*(?:[\[【]\s*答\s*案\s*[\]】][*_#>\s]*[:：]?"
+    r"|答\s*案[*_#>\s]*[:：])[*_#>\s]*")
+_MARKS = "*_#> \t\r\n"
+
+
+def _trim_marks(s):
+    """去掉标签切割后残留的 markdown 记号（**、#、> 等）。
+
+    注意：正文里的成对 ** 要保留，否则会变成半截粗体。
+    """
+    t = (s or "").strip()
+    t = re.sub(r"^[*_#>\s]+", "", t)                     # 开头的残留肯定要去
+    if t.count("*") % 2 == 1:                             # 结尾的只在不成对时去
+        t = re.sub(r"[*\s]+$", "", t)
+    return t.strip()
+
+
+def _answer_text(s):
+    """答案只要纯文本：两边残留的 ** 一律削掉（答案本来就不该加粗）。"""
+    return re.sub(r"^[*_#>\s]+|[*_#\s]+$", "", (s or "")).strip()
+
+
+def split_qa(full):
+    """把模型输出拆成 (答案, 解析)。
+
+    兼容 **答案：** / **解析**: / 【解析】: / ### 解析： 这些写法：
+    先把标签两边的 markdown 记号一起吃掉，避免 ** 漏进正文被当成字面量显示。
+    """
+    s = (full or "").replace("\r\n", "\n").replace("\r", "\n")
+    mj = _LBL_JX.search(s)
+    head, tail = (s[:mj.start()], s[mj.end():]) if mj else (s, "")
+    ma = _LBL_ANS.search(head)
+    ans = head[ma.end():] if ma else head
+    return _answer_text(ans), _trim_marks(tail)
+
+
+class Stepper(QWidget):
+    """现代步进器：− [数值] +，替掉 QSpinBox 那两个老式上下小箭头。"""
+
+    def __init__(self, minimum=0, maximum=100, step=1, suffix="", parent=None):
+        super().__init__(parent)
+        self._min, self._max, self._step, self._suffix = minimum, maximum, step, suffix
+        self._value = minimum
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        self.minus = QPushButton("−")
+        self.plus = QPushButton("+")
+        for b in (self.minus, self.plus):
+            b.setObjectName("stepBtn")
+            b.setFixedSize(32, 30)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFocusPolicy(Qt.NoFocus)
+        self.edit = QLineEdit()
+        self.edit.setAlignment(Qt.AlignCenter)
+        self.edit.setFixedWidth(104)
+        h.addWidget(self.minus)
+        h.addWidget(self.edit)
+        h.addWidget(self.plus)
+        h.addStretch(1)
+        self.minus.clicked.connect(lambda: self.setValue(self._value - self._step))
+        self.plus.clicked.connect(lambda: self.setValue(self._value + self._step))
+        self.edit.editingFinished.connect(self._on_edit)
+        self.setValue(minimum)
+
+    def value(self):
+        return self._value
+
+    def setValue(self, v):
+        try:
+            v = int(v)
+        except Exception:
+            v = self._value
+        self._value = max(self._min, min(self._max, v))
+        self.edit.setText("%d%s" % (self._value, self._suffix))
+
+    def _on_edit(self):
+        txt = self.edit.text().replace(self._suffix.strip(), "")
+        digits = re.sub(r"[^\d]", "", txt)
+        self.setValue(int(digits) if digits else self._value)
+
+
 class AnswerOverlay(QWidget):
     def __init__(self, host):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -427,6 +544,7 @@ class AnswerOverlay(QWidget):
             # 真窗口还开着：恢复成真实配置的外观
             self.apply_settings()
 
+    @safe_slot
     def apply_settings(self):
         cfg = self._cfg()
         self._width = int(cfg.get("overlay_width", 560))
@@ -455,36 +573,27 @@ class AnswerOverlay(QWidget):
             self.body.setMaximumHeight(380)
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
-            self.resize(self._width, self.height())
             self.adjustSize()
         self._render()
 
     # ---------------- 内容
+    @safe_slot
     def set_text(self, text):
         self._full = text or ""
         self._render()
 
+    @safe_slot
     def append_text(self, delta):
         self._full = getattr(self, "_full", "") + (delta or "")
         self._render()
 
+    @safe_slot
     def _render(self):
         import re as _re
         import html as _html
         full = getattr(self, "_full", "") or ""
 
-        idx = -1
-        for marker in ("解析：", "解析:"):
-            i = full.find(marker)
-            if i >= 0:
-                idx = i
-                break
-        head = full if idx < 0 else full[:idx]
-        tail = "" if idx < 0 else full[idx:]
-        tail = tail.replace("解析：", "").replace("解析:", "").strip()
-
-        m = _re.search(r"答\s*案\s*[:：]\s*([\s\S]*)", head)
-        ans = (m.group(1) if m else head).strip().strip("：:").strip()
+        ans, tail = split_qa(full)
 
         # 从题干里解析选项（A．xxx B．xxx）
         opts = []
@@ -843,14 +952,18 @@ class SettingsPage(QWidget):
         self.model.setPlaceholderText("deepseek-chat")
         c.addLayout(self._labeled("模型", self.model))
 
-        self.vision_model = QComboBox()
-        self.vision_model.setEditable(True)
-        self.vision_model.addItem("")
-        self.vision_model.addItems(config_store.VISION_PRESETS)
-        self.vision_model.setCurrentText(self.cfg.get("vision_model", "") or "")
-        if self.vision_model.lineEdit():
-            self.vision_model.lineEdit().setPlaceholderText(
-                "留空 = 不看图；可从列表选，也可直接输入")
+        self.vision_model = WinCombo()
+        self.vision_model.addItem("不使用（只走文字）", "")
+        for _vm in config_store.VISION_PRESETS:
+            self.vision_model.addItem(_vm, _vm)
+        self.vision_model.addItem("自定义…", "__custom__")
+        _cur = (self.cfg.get("vision_model") or "").strip()
+        if _cur and _cur not in config_store.VISION_PRESETS:
+            self.vision_model.insertItem(self.vision_model.count() - 1, _cur, _cur)
+        _vi = self.vision_model.findData(_cur) if _cur else 0
+        self.vision_model.setCurrentIndex(_vi if _vi >= 0 else 0)
+        self.vision_model.setToolTip("从列表选；表里没有就选「自定义…」手填")
+        self.vision_model.activated[int].connect(self._on_vision_pick)
         c.addLayout(self._labeled("视觉模型", self.vision_model))
 
         self.vision_mode = WinCombo()
@@ -861,11 +974,8 @@ class SettingsPage(QWidget):
         self.vision_mode.setCurrentIndex(vi if vi >= 0 else 0)
         c.addLayout(self._labeled("图片作答", self.vision_mode))
 
-        self.interval = QSpinBox()
-        self.interval.setRange(500, 5000)
-        self.interval.setSingleStep(100)
+        self.interval = Stepper(500, 5000, 100, " ms")
         self.interval.setValue(int(float(self.cfg.get("scan_interval", 1.2)) * 1000))
-        self.interval.setSuffix(" ms")
         c.addLayout(self._labeled("扫描间隔", self.interval))
 
         self.bank_first = QCheckBox("优先查本地题库（命中不花 token）")
@@ -922,14 +1032,36 @@ class SettingsPage(QWidget):
             self.model.setText(p["model"])
         v = (p.get("vision") or "").strip()
         self.vision_model.clear()
-        self.vision_model.addItem("")
+        self.vision_model.addItem("不使用（只走文字）", "")
         if v:
-            self.vision_model.addItem(v)
+            self.vision_model.addItem(v, v)
         for x in config_store.VISION_PRESETS:
             if x and x != v:
-                self.vision_model.addItem(x)
-        self.vision_model.setCurrentText(v)
+                self.vision_model.addItem(x, x)
+        self.vision_model.addItem("自定义…", "__custom__")
+        pos = self.vision_model.findData(v)
+        self.vision_model.setCurrentIndex(pos if pos >= 0 else 0)
         self.hint.setText(p.get("key_hint", ""))
+
+    def _on_vision_pick(self, idx):
+        """选「自定义…」时弹框手填模型名，并加进列表。"""
+        if self.vision_model.itemData(idx) != "__custom__":
+            return
+        txt, ok = QInputDialog.getText(
+            self, "自定义视觉模型", "模型名称（例：gpt-4o / qwen-vl-max）：")
+        txt = (txt or "").strip()
+        if ok and txt:
+            pos = self.vision_model.findData(txt)
+            if pos < 0:
+                self.vision_model.insertItem(self.vision_model.count() - 1, txt, txt)
+                pos = self.vision_model.findData(txt)
+            self.vision_model.setCurrentIndex(pos)
+        else:
+            self.vision_model.setCurrentIndex(0)
+
+    def _vision_value(self):
+        d = self.vision_model.currentData()
+        return "" if d in (None, "__custom__") else str(d)
 
     # ---------------- 答案窗
     def _build_overlay(self):
@@ -1155,7 +1287,7 @@ class SettingsPage(QWidget):
         c["overlay_text_color"] = self._tcolor_holder[0]
         c["overlay_height"] = 0 if self.chk_auto_h.isChecked() else self.sl_height.value()
         c["auto_save_bank"] = self.auto_bank.isChecked()
-        c["vision_model"] = self.vision_model.currentText().strip()
+        c["vision_model"] = self._vision_value()
         c["vision_mode"] = self.vision_mode.currentData() or "auto"
         return c
 
@@ -1228,12 +1360,6 @@ class HistoryPage(QWidget):
         t.setObjectName("pageTitle")
         head.addWidget(t)
         head.addStretch(1)
-        self.btn_fold = QPushButton("◀ 收起")
-        self.btn_fold.setFixedHeight(28)
-        self.btn_fold.setCursor(Qt.PointingHandCursor)
-        self.btn_fold.setToolTip("折叠左侧列表，只留题号，右侧看题更宽")
-        self.btn_fold.clicked.connect(self.toggle_fold)
-        head.addWidget(self.btn_fold)
         lay.addLayout(head)
 
         top = QHBoxLayout()
@@ -2179,6 +2305,9 @@ def build_qss(t):
         f"border-radius:4px;background:transparent;color:{t['text']};font-size:13px;}}"
         f"QPushButton#navItem:hover{{background:{t['hover']};}}"
         f"QPushButton#navItem:checked{{background:{t['sel']};font-weight:600;}}"
+        f"QPushButton#stepBtn{{background:{t['btn']};border:1px solid {t['btnBorder']};"
+        f"border-radius:6px;padding:0px;font-size:15px;font-weight:600;}}"
+        f"QPushButton#stepBtn:hover{{background:{t['btnHover']};}}"
         f"QLabel#pageTitle{{font-size:24px;font-weight:600;color:{t['text']};}}"
         "QPushButton:focus{outline:none;}"
         f"QListWidget#subNav{{background:transparent;border:none;padding:0px;}}"
@@ -2474,6 +2603,15 @@ class MainWindow(QWidget):
             self.nav[key] = b
 
         sl.addStretch(1)
+        self.btn_collapse = QPushButton("收起主界面")
+        self.btn_collapse.setObjectName("navItem")
+        self.btn_collapse.setIcon(glyph_icon("\ue7b8", self.theme["text"], 15))
+        self.btn_collapse.setIconSize(QSize(15, 15))
+        self.btn_collapse.setFocusPolicy(Qt.NoFocus)
+        self.btn_collapse.setCursor(Qt.PointingHandCursor)
+        self.btn_collapse.setToolTip("把主界面隐藏到托盘，只留答案窗（热键可再叫回来）")
+        self.btn_collapse.clicked.connect(self.collapse_main)
+        sl.addWidget(self.btn_collapse)
         self.btn_update = QPushButton("发现新版本")
         self.btn_update.setObjectName("updateBtn")
         self.btn_update.setCursor(Qt.PointingHandCursor)
@@ -2966,6 +3104,7 @@ class MainWindow(QWidget):
         self._dl.start()
 
     # -------- 状态
+    @safe_slot
     def set_state(self, text, color):
         self.status.setText(text)
         self.dot.setStyleSheet(f"background:{color};border-radius:5px;")
@@ -2975,6 +3114,7 @@ class MainWindow(QWidget):
         self.btn_start.style().unpolish(self.btn_start)
         self.btn_start.style().polish(self.btn_start)
 
+    @safe_slot
     def add_log(self, text):
         self.log.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {text}")
 
@@ -3140,19 +3280,27 @@ class MainWindow(QWidget):
             self._overlay_was_visible = False
             self.overlay.show()
 
+    @safe_slot
     def _on_ocr(self, text):
+        trace("ocr len=%d" % len(text or ""))
         if text != self.last_question:
             self.overlay.set_text("")      # 新题：清掉上一题答案，避免越堆越长
             self.last_question = text
             self.add_log("识别到：" + text.replace("\n", " ")[:60])
 
+    @safe_slot
     def _on_delta(self, d):
         if not self.overlay.isVisible():
             self.overlay.place_avoiding(self.region)
             self.overlay.show()
         self.overlay.append_text(d)
 
+    @safe_slot
     def _on_answer(self, full, cost):
+        trace("answer start len=%d" % len(full or ""))
+        # 题库命中 / 非流式返回时没有任何 delta，这里补齐，否则答案窗只显示「…」
+        if (getattr(self.overlay, "_full", "") or "") != (full or ""):
+            self.overlay.set_text(full or "")
         if not self.overlay.isVisible():
             self.overlay.place_avoiding(self.region)
             self.overlay.show()
@@ -3190,6 +3338,7 @@ class MainWindow(QWidget):
                                     "cost": round(cost, 2)}, ensure_ascii=False) + "\n")
         except Exception:
             pass
+        trace("answer done")
 
     def apply_correction(self, text):
         """把用户改好的答案覆盖进题库 + 记一条历史。"""
@@ -3211,6 +3360,14 @@ class MainWindow(QWidget):
     def on_overlay_moved(self, pos):
         self.cfg["overlay_pos"] = [int(pos.x()), int(pos.y())]
         config_store.save(self.cfg)
+
+    @safe_slot
+    def collapse_main(self):
+        """收起：隐藏主界面（不动历史列表），只留答案窗 + 托盘图标。"""
+        self.hide()
+        if self.tray:
+            self.tray.showMessage("Knowlib", "主界面已收起，点托盘图标可恢复",
+                                  QSystemTrayIcon.Information, 2500)
 
     def toggle_overlay(self):
         if self.overlay.isVisible():
@@ -3300,8 +3457,53 @@ class MainWindow(QWidget):
 
 SINGLE_NAME = "knowlib-pc-single-instance"
 
+_TRACE_F = None
+
+
+def trace(msg):
+    """关键步骤落盘到 error.log：万一闪退，看最后一行就知道死在哪一步。"""
+    if _TRACE_F is None:
+        return
+    try:
+        _TRACE_F.write("%s %s\n" % (time.strftime("%H:%M:%S"), msg))
+        _TRACE_F.flush()
+    except Exception:
+        pass
+
+
+def _install_crash_log():
+    """把未捕获异常 / 硬崩溃信息写进 %APPDATA%\\Knowlib\\error.log，方便事后查。"""
+    global _TRACE_F
+    try:
+        import faulthandler
+        d = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Knowlib")
+        os.makedirs(d, exist_ok=True)
+        f = open(os.path.join(d, "error.log"), "a", encoding="utf-8", buffering=1)
+        f.write("\n==== %s 启动 v%s ====\n" % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                                              getattr(config_store, "APP_VERSION", "?")))
+        _TRACE_F = f
+        sys.stderr = f
+        sys.stdout = f
+
+        def _hook(t, v, tb):
+            f.write("".join(traceback.format_exception(t, v, tb)))
+            f.flush()
+        sys.excepthook = _hook
+
+        import threading
+
+        def _thook(a):
+            f.write("".join(traceback.format_exception(
+                a.exc_type, a.exc_value, a.exc_traceback)))
+            f.flush()
+        threading.excepthook = _thook
+        faulthandler.enable(file=f, all_threads=True)
+    except Exception:
+        pass
+
 
 def main():
+    _install_crash_log()
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)   # 关窗收托盘，真要退出走 quit_app

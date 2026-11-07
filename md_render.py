@@ -180,7 +180,8 @@ def latex_to_html(src, display=False):
 
 # ---------------------------------------------------------------- Markdown
 _MATH_BLOCK = re.compile(r"\$\$(.+?)\$\$", re.S)
-_MATH_INLINE = re.compile(r"(?<!\\)\$(?!\$)(.+?)(?<!\\)\$", re.S)
+_MATH_INLINE = re.compile(r"(?<!\\)\$(?!\$)([^$\n]{1,300}?)(?<!\\)\$")
+_CJK = re.compile(r"[\u4e00-\u9fff]")
 
 
 def _inline(text):
@@ -188,8 +189,11 @@ def _inline(text):
     parts = []
     pos = 0
     for m in _MATH_INLINE.finditer(text):
+        body = m.group(1)
+        if _CJK.search(body):
+            continue          # “价格为 $5 元” 这种不是公式，原样保留
         parts.append(("t", text[pos:m.start()]))
-        parts.append(("m", m.group(1)))
+        parts.append(("m", body))
         pos = m.end()
     parts.append(("t", text[pos:]))
 
@@ -234,8 +238,13 @@ def to_html(md, color="#e6e9ef", accent="#8fb6ff", font_size=13):
         blocks.append(latex_to_html(m.group(1).strip(), display=True))
         return f"\x00B{len(blocks) - 1}\x00"
 
+    def _stash_inline(m):
+        blocks.append(latex_to_html(m.group(1).strip(), display=False))
+        return f"\x00B{len(blocks) - 1}\x00"
+
     src = _MATH_BLOCK.sub(_stash, src)
     src = re.sub(r"\\\[(.+?)\\\]", _stash, src, flags=re.S)
+    src = re.sub(r"\\\((.+?)\\\)", _stash_inline, src, flags=re.S)
 
     lines = src.split("\n")
     out = []
