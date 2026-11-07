@@ -2537,6 +2537,8 @@ class OnlinePage(QWidget):
         self.ans = None
         if self.use_web:
             self.view = web_view.QuizView(self)
+            self.view.loadFinished.connect(self._on_web_loaded)
+            self.view.urlChanged.connect(self._on_web_url)
             body.addWidget(self.view, 1)
         else:
             self.list = QListWidget()
@@ -2588,11 +2590,49 @@ class OnlinePage(QWidget):
         self.stat = QLabel("")
         self.stat.setObjectName("sub")
         tools.addWidget(self.stat)
-        right.addLayout(tools)
-        body.addLayout(right, 1)
-        lay.addLayout(body, 1)
+        if self.use_web:
+            # 网页模式：工具栏直接放外层，别让空的 right 分走一半宽度
+            lay.addLayout(tools)
+            lay.addLayout(body, 1)
+        else:
+            right.addLayout(tools)
+            body.addLayout(right, 1)
+            lay.addLayout(body, 1)
 
         self._empty()
+
+    # ---------------- 网页模式回调
+    @safe_slot
+    def _on_web_loaded(self, ok):
+        if not ok:
+            return
+        try:
+            web_view.install_save_button(self.view)
+        except Exception:
+            pass
+
+    @safe_slot
+    def _on_web_url(self, url):
+        """网页里点了「加入题库」→ location.hash 变成 #klsave:N。"""
+        try:
+            s = url.toString()
+        except Exception:
+            return
+        m = re.search(r"#klsave:(\d+)", s)
+        if not m:
+            return
+        i = int(m.group(1))
+        if i < 0 or i >= len(self.qs):
+            return
+        self.row = i
+        if i in self.saved:
+            self.stat.setText("第 %d 题已经在题库里了" % (i + 1))
+            return
+        if self._save_one(i):
+            self._refresh_marks()
+            self.stat.setText("已加入题库 ✓（第 %d 题，共 %d 题）" % (i + 1, len(self.saved)))
+        else:
+            self.stat.setText("加入失败（题库写入出错）")
 
     # ---------------- 状态
     def _empty(self):

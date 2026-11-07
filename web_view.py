@@ -93,3 +93,41 @@ def current_index(view, cb):
     """取网页里当前题号（0 起）。"""
     view.page().runJavaScript(
         "try{ (typeof i==='number') ? i : -1 }catch(e){ -1 }", cb)
+
+
+_SAVE_JS = r"""
+(function(){
+  if(window.__klSaveHooked) return 'already';
+  window.__klSaveHooked=true;
+  function addBtn(){
+    var q=document.getElementById('q'); if(!q) return;
+    var card=q.querySelector('.card'); if(!card) return;
+    if(card.querySelector('.klsavebtn')) return;
+    var b=document.createElement('button');
+    b.type='button';
+    b.className='qbtn klsavebtn';
+    b.textContent='＋ 加入题库';
+    b.style.marginLeft='.5rem';
+    b.onclick=function(ev){
+      if(ev){ ev.preventDefault(); }
+      var idx=(typeof i==='number')?i:0;
+      b.textContent='已加入 ✓';
+      b.disabled=true;
+      b.style.opacity='.55';
+      location.hash='klsave:'+idx;
+      return false;
+    };
+    card.appendChild(b);
+  }
+  if(document.readyState!=='loading'){ addBtn(); }
+  document.addEventListener('DOMContentLoaded', addBtn);
+  try{ new MutationObserver(addBtn).observe(document.body,{childList:true,subtree:true}); }catch(e){}
+  setInterval(addBtn, 1200);
+  return 'ok';
+})()
+"""
+
+
+def install_save_button(view):
+    """每题卡片上加一个「加入题库」按钮，点完通过 #klsave:N 通知 Python。"""
+    view.page().runJavaScript(_SAVE_JS)
