@@ -667,11 +667,19 @@ class AnswerOverlay(QWidget):
         self.body.setHtml("".join(parts) if parts else "")
         self.part_label.setVisible(bool(tail))
         self.body.verticalScrollBar().setValue(0)
+        # 记下「实际显示」的内容，复制时保持一致
+        self._display_ans = big or ""
+        self._display_tail = tail or ""
 
     def copy_text(self):
-        text = (getattr(self, "_full", "") or "").strip()
-        if not text:
-            text = (self.answer.text() + "\n" + self.body.toPlainText()).strip()
+        ans = (getattr(self, "_display_ans", "") or self.answer.text() or "").strip()
+        tail = (getattr(self, "_display_tail", "") or self.body.toPlainText() or "").strip()
+        if ans or tail:
+            text = ("答案：" + ans if ans else "")
+            if tail:
+                text += ("\n解析：" + tail if text else tail)
+        else:
+            text = (getattr(self, "_full", "") or "").strip()
         QApplication.clipboard().setText(text)
         self.foot.setText("已复制到剪贴板")
 
