@@ -5361,9 +5361,33 @@ class MainWindow(QWidget):
             self.overlay.show()
         self.overlay.append_text(d)
 
+    def _ensure_answer_option(self, text):
+        """首行只有字母时，用题干里解析出的选项原文补成「B．xxx」。"""
+        import re as _re
+        t = text or ""
+        try:
+            q = getattr(self, "last_question", "") or ""
+            import paper_export as _pe
+            _, opts = _pe.parse_options(q)
+            d = dict((str(k).upper(), str(v)) for k, v in (opts or []))
+        except Exception:
+            d = {}
+        if not d:
+            return t
+        lines = t.split("\n")
+        for i, ln in enumerate(lines):
+            m = _re.match(r"^\s*\**\s*答案\s*[:：]\s*\**\s*([A-Ha-h])\s*\**\s*$", ln)
+            if m:
+                k = m.group(1).upper()
+                if k in d:
+                    lines[i] = "答案：%s．%s" % (k, d[k])
+                break
+        return "\n".join(lines)
+
     @safe_slot
     def _on_answer(self, full, cost):
         trace("answer start len=%d" % len(full or ""))
+        full = self._ensure_answer_option(full or "")
         # 题库命中 / 非流式返回时没有任何 delta，这里补齐，否则答案窗只显示「…」
         if (getattr(self.overlay, "_full", "") or "") != (full or ""):
             self.overlay.set_text(full or "")
