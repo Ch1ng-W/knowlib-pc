@@ -1,0 +1,83 @@
+/* ===== Knowlib 沉浸光感（全站公用） =====
+   - 容器(.hero/.card)：跟随鼠标的高光 + 描边 + 色相随位置 + 呼吸流光 + 视差倾斜
+   - 只留边缘光：
+       · 单题卡(.qcard)
+       · 答题页卡片（<body class="edge-only"> 下的 .card）
+     → 卡面不变色，仅保留【边缘高光 + 流光】，且不倾斜
+   - 按钮(button/.btn/.back/.filelbl)：统一的"容器化"描边光
+*/
+@property --ang{ syntax:'<angle>'; inherits:false; initial-value:0deg; }
+@keyframes glowspin{ to{ --ang:360deg; } }
+
+/* ---------- 容器 / 单题卡（发光描边） ---------- */
+.hero, .card, .qcard{
+  position:relative;
+  border:2px solid transparent !important;
+  background-image:
+    radial-gradient(420px circle at var(--mx,-9999px) var(--my,-9999px),
+      hsla(var(--gh,212),100%,58%,.28), transparent 66%),
+    linear-gradient(var(--card), var(--card)),
+    radial-gradient(420px circle at var(--mx,-9999px) var(--my,-9999px),
+      hsla(var(--gh,212),100%,60%,.98), hsla(calc(var(--gh,212) + 30),85%,62%,.5) 40%, transparent 72%),
+    linear-gradient(var(--line), var(--line));
+  background-origin: padding-box, padding-box, border-box, border-box;
+  background-clip:   padding-box, padding-box, border-box, border-box;
+  background-repeat: no-repeat;
+}
+/* 只留边缘光 —— 卡面用不透明底色覆盖内部，仅露边缘描边 */
+.qcard{ --glow-face:#fff; }
+body.edge-only .card{ --glow-face:var(--card); }
+.qcard, body.edge-only .card{
+  background-image:
+    linear-gradient(var(--glow-face), var(--glow-face)),
+    radial-gradient(420px circle at var(--mx,-9999px) var(--my,-9999px),
+      hsla(var(--gh,212),100%,60%,.98), hsla(calc(var(--gh,212) + 30),85%,62%,.5) 40%, transparent 72%),
+    linear-gradient(var(--line), var(--line));
+  background-origin: padding-box, border-box, border-box;
+  background-clip:   padding-box, border-box, border-box;
+}
+/* 只有顶层容器（大卡）带视差倾斜 */
+.hero, .card{
+  transform: perspective(900px) rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg));
+  transition: transform .22s ease-out, box-shadow .35s;
+  will-change: transform;
+}
+.hero::after, .card::after, .qcard::after{
+  content:""; position:absolute; top:0;right:0;bottom:0;left:0; border-radius:inherit; padding:2px;
+  background:conic-gradient(from var(--ang) at 50% 50%,
+    transparent 0 50%, hsla(var(--gh,212),100%,62%,.6) 63%, transparent 76% 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor; mask-composite:exclude;
+  pointer-events:none; z-index:2;
+  animation: glowspin var(--spin-dur,7s) linear infinite;
+  animation-delay: var(--spin-delay,0s);
+  animation-direction: var(--spin-dir,normal);
+}
+body.no-tilt .hero, body.no-tilt .card{ transform:none; }
+
+/* ---------- 按钮（统一容器化 + 描边光） ---------- */
+button, .btn, .back, .filelbl{ position:relative; isolation:isolate; }
+button::after, .btn::after, .back::after, .filelbl::after{
+  content:""; position:absolute; top:0;right:0;bottom:0;left:0; border-radius:inherit; padding:2px;
+  background:radial-gradient(240px circle at var(--mx,-9999px) var(--my,-9999px),
+    hsla(var(--gh,212),100%,62%,.95), hsla(calc(var(--gh,212) + 30),85%,64%,.5) 45%, transparent 72%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor; mask-composite:exclude;
+  opacity:0; transition:opacity .3s; pointer-events:none; z-index:3;
+}
+button:hover::after, .btn:hover::after, .back:hover::after, .filelbl:hover::after{ opacity:1; }
+
+/* 光秃秃的返回链接 → 胶囊容器 */
+.back{
+  display:inline-flex; align-items:center; gap:.35rem;
+  padding:.42rem .85rem; border:1px solid var(--line); border-radius:999px;
+  background:var(--card); color:var(--sub); text-decoration:none; font-size:13px;
+  backdrop-filter:blur(6px); transition:color .2s;
+}
+.back:hover{ color:var(--accent); }
+
+@media (hover:none){
+  button::after, .btn::after, .back::after, .filelbl::after{ opacity:.4 }
+  .hero::after, .card::after, .qcard::after{ animation:none }
+  .hero, .card{ transform:none }
+}

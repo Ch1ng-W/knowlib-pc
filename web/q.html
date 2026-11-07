@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
+<script>window.__KL_OFFLINE__=1;</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>
@@ -15,7 +16,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,Bli
 .wrap{max-width:44rem;margin:0;padding:.9rem .4rem calc(6rem + env(safe-area-inset-bottom));min-height:100vh;flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
 .side{position:fixed;top:0;right:0;bottom:0;width:min(86vw,20rem);background:var(--card);z-index:12;padding:1rem;overflow:auto;transform:translateX(105%);transition:transform .25s ease;box-shadow:-2px 0 24px #00000022}
 .side.on{transform:none}
-.mask{position:fixed;inset:0;background:#0006;z-index:11;opacity:0;pointer-events:none;transition:opacity .25s ease}
+.mask{position:fixed;top:0;right:0;bottom:0;left:0;background:#0006;z-index:11;opacity:0;pointer-events:none;transition:opacity .25s ease}
 .mask.on{opacity:1;pointer-events:auto}
 .qbtn{width:100%;margin-top:1rem;border:1px solid var(--accent);background:var(--accent);color:#fff;padding:.7rem 0;border-radius:.8rem;font-size:.92rem}
 .chip2{display:inline-block;margin-top:1rem;font-size:.78rem;color:var(--fg2)}
@@ -44,7 +45,7 @@ h1{font-size:1.2rem;margin:0;line-height:1.3}
 .qimg.tall{max-width:44%;margin-left:0}
 .qimg.png{background:#fff}
 @media (min-width:900px){.qimg.tall{max-width:32%}}
-.imgmask{position:fixed;inset:0;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;cursor:zoom-out}
+.imgmask{position:fixed;top:0;right:0;bottom:0;left:0;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;cursor:zoom-out}
 .imgmask img{max-width:100%;max-height:100%;object-fit:contain}
 .opts{display:flex;flex-direction:column;gap:.65rem}
 .opt{display:flex;gap:.7rem;align-items:flex-start;border:1px solid var(--line);border-radius:1rem;padding:.75rem .9rem;cursor:pointer;background:var(--card)}
@@ -72,7 +73,7 @@ button{font-family:inherit;font-size:inherit;cursor:pointer}
 .bar button:disabled{opacity:.45}
 .bar button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 #pdf{border:1px solid var(--accent);color:var(--accent);font-weight:600}
-.sheet{position:fixed;inset:0;background:#00000099;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:none;align-items:flex-end;z-index:30}
+.sheet{position:fixed;top:0;right:0;bottom:0;left:0;background:#00000099;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:none;align-items:flex-end;z-index:30}
 .sheet.on{display:flex}
 .sheet .in{background:var(--card);width:100%;max-width:44rem;margin:0 auto;border-radius:1.25rem 1.25rem 0 0;padding:1rem 1rem calc(1rem + env(safe-area-inset-bottom));max-height:82vh;overflow:auto;box-shadow:0 -8px 40px #00000040}
 .sheet h3{margin:.25rem 0 .75rem;font-size:1.06rem}
@@ -141,9 +142,9 @@ button{font-family:inherit;font-size:inherit;cursor:pointer}
 .appbar .ab{border:1px solid #ffffff66;background:#ffffff33;color:#fff;padding:.35rem .7rem;border-radius:.6rem;font-size:.8rem;white-space:nowrap;cursor:pointer}
 .appbar .abx{border:none;background:transparent;color:#fff;font-size:1rem;padding:0 .2rem;cursor:pointer}
 </style>
-<link rel="stylesheet" href="/katex/katex.inline.css">
-<link rel="stylesheet" href="/light.css">
-<style id="preCov">.wrap{visibility:hidden!important}.bar{display:none!important}#boot{position:fixed;inset:0;z-index:99999;background:#f4f5f7;display:flex;align-items:center;justify-content:center;font-size:.9rem;color:#6e6e73;letter-spacing:.04em}</style>
+<link rel="stylesheet" href="katex/katex.inline.css">
+<link rel="stylesheet" href="light.css">
+<style id="preCov">.wrap{visibility:hidden!important}.bar{display:none!important}#boot{position:fixed;top:0;right:0;bottom:0;left:0;z-index:99999;background:#f4f5f7;display:flex;align-items:center;justify-content:center;font-size:.9rem;color:#6e6e73;letter-spacing:.04em}</style>
 </head>
 <body class="no-tilt edge-only">
 <div id="boot">正在打开试卷…</div>
@@ -202,7 +203,6 @@ button{font-family:inherit;font-size:inherit;cursor:pointer}
 
 <script src="lz-string.js"></script>
 <script src="katex/katex.min.js"></script>
-<script>window.__KL_OFFLINE__=1;</script>
 <script>
 function _dz(z){try{return JSON.parse(window.LZString.decompressFromEncodedURIComponent(z));}catch(e){return null;}}
 function _dd(b64){b64=b64.replace(/-/g,"+").replace(/_/g,"/");while(b64.length%4){b64+="=";}try{return JSON.parse(decodeURIComponent(escape(atob(b64))));}catch(e){return null;}}
@@ -611,7 +611,23 @@ function _openInApp(){
   var isMobile=/Android|iPhone|iPad|iPod|Mobile|HarmonyOS|MicroMessenger/i.test(ua);
   var isWx=/MicroMessenger/i.test(ua);
   var closed=false;try{closed=localStorage.getItem('knowlib.abClosed')==='1';}catch(e){}
-  if(!isMobile||closed){bar.style.display='none';return;} /* 仅移动端显示，且记住已关闭 */
+  // ---- 电脑端：提示用 Knowlib PC 打开（knowlib://s/<code>）
+  if(!isMobile){
+    var _m=(location.pathname||'').match(/^\/s\/([a-z0-9]+)/i);
+    var _code=_m?_m[1]:'';
+    if(closed||!_code){bar.style.display='none';return;}
+    bar.querySelector('span').textContent='用 Knowlib 电脑版打开：可在电脑上做题、收藏题目、组卷';
+    var _b=document.getElementById('openApp');
+    _b.textContent='在电脑上打开';
+    bar.style.display='flex';
+    _b.addEventListener('click',function(){
+      location.href='knowlib://s/'+_code;
+      setTimeout(function(){toast('没检测到 Knowlib 电脑版：请先到 knowlib.fun 下载安装');},2000);
+    });
+    document.getElementById('closeAb').addEventListener('click',function(){bar.style.display='none';try{localStorage.setItem('knowlib.abClosed','1');}catch(e){}});
+    return;
+  }
+  if(closed){bar.style.display='none';return;} /* 仅移动端显示，且记住已关闭 */
   var btn=document.getElementById('openApp');
   if(isWx){btn.textContent='去浏览器打开';}
   bar.style.display='flex';
@@ -625,7 +641,7 @@ render();
 </script>
 
 <script>document.addEventListener('click',function(e){var t=e.target;if(t&&t.tagName==='IMG'&&t.parentNode&&t.parentNode.className==='qimgbox'){t.classList.toggle('zoom');}},false);</script>
-<script src="/light.js" defer></script>
+<script src="light.js" defer></script>
 
 <!-- knowlib-feedback -->
 <div class="sheet" id="fbs"><div class="in">
@@ -688,7 +704,7 @@ render();
       var uid=dv();
       var box=document.createElement('div');
       box.id='beanBox';
-      box.style.cssText='position:fixed;inset:0;z-index:99998;background:#0006;display:flex;align-items:center;justify-content:center;padding:18px';
+      box.style.cssText='position:fixed;top:0;right:0;bottom:0;left:0;z-index:99998;background:#0006;display:flex;align-items:center;justify-content:center;padding:18px';
       var inner=document.createElement('div');
       inner.style.cssText='max-width:26rem;width:100%;background:var(--card,#fff);border:1px solid var(--line,#00000014);border-radius:16px;padding:18px';
       inner.innerHTML =
@@ -742,7 +758,7 @@ render();
       var cur=null; try{ cur=JSON.parse(localStorage.getItem('knowlib.byok')||'null'); }catch(e){}
       var box=document.createElement('div');
       box.id='byokBox';
-      box.style.cssText='position:fixed;inset:0;z-index:99998;background:#0006;display:flex;align-items:center;justify-content:center;padding:18px';
+      box.style.cssText='position:fixed;top:0;right:0;bottom:0;left:0;z-index:99998;background:#0006;display:flex;align-items:center;justify-content:center;padding:18px';
       var inner=document.createElement('div');
       inner.style.cssText='max-width:26rem;width:100%;background:var(--card,#fff);border:1px solid var(--line,#00000014);border-radius:16px;padding:18px';
       inner.innerHTML =
@@ -874,7 +890,7 @@ render();
 
     try{
       var r=await fetch('/api/exam-submit',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({code:quizCode(), uid:dv(), score:total, total:(window.DATA||{}).total||0, answers:JSON.stringify(window.ans||{})})});
+        body:JSON.stringify({code:quizCode(), uid:dv(), score:total, total:(window.DATA||{}).total||0, answers:JSON.stringify(window.ans||{}), startedAt:(window.__klOpen||0), duration:Math.round((Date.now()-(window.__klOpen||Date.now()))/1000)})});
       var j=await r.json();
       if(j && (j.ok || j.code==='ALREADY')){
         EX_SCORE = (j.code==='ALREADY') ? Number(j.score||0) : total;
@@ -900,7 +916,7 @@ render();
       var total=(window.DATA||{}).total||0;
       var box=document.createElement('div');
       box.id='scoreBox';
-      box.style.cssText='position:fixed;inset:0;z-index:99999;background:var(--bg,#f4f5f7);display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto';
+      box.style.cssText='position:fixed;top:0;right:0;bottom:0;left:0;z-index:99999;background:var(--bg,#f4f5f7);display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto';
       var pct = total>0 ? Math.round(score/total*100) : 0;
       box.innerHTML =
         '<div style="max-width:30rem;width:100%;background:var(--card,#fff);border:1px solid var(--line,#00000014);border-radius:18px;padding:22px 20px;box-shadow:0 14px 44px #0002;text-align:center">'
@@ -1039,7 +1055,7 @@ render();
 
       var cov=document.createElement('div');
       cov.id='cov';
-      cov.style.cssText='position:fixed;inset:0;z-index:99999;background:var(--bg,#f4f5f7);display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto';
+      cov.style.cssText='position:fixed;top:0;right:0;bottom:0;left:0;z-index:99999;background:var(--bg,#f4f5f7);display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto';
       cov.innerHTML =
         '<div style="max-width:30rem;width:100%;background:var(--card,#fff);border:1px solid var(--line,#00000014);border-radius:18px;padding:22px 20px;box-shadow:0 14px 44px #0002">'
         + '<div style="font-size:.72rem;letter-spacing:.12em;color:#0A84FF;font-weight:700">KNOWLIB · 在线试卷</div>'
@@ -1377,6 +1393,31 @@ render();
     }catch(e){ return false; }
   }
 
+  var __klOpen = Date.now();
+  var __klTrackedAt = 0;
+  // 练习模式：判完分报一次作答记录（考试模式由 /api/exam-submit 服务端记录）
+  function __klTrackPractice(){
+    try{
+      if(!(window.Q||[]).length) return;
+      if(typeof examActive === 'function' && examActive()) return;
+      if(EX && EX.submitted) return;
+      if(Date.now() - __klTrackedAt < 15000) return;
+      var code = quizCode(); if(!code) return;
+      __klTrackedAt = Date.now();
+      var total = 0;
+      (window.Q||[]).forEach(function(q,k){
+        try{
+          if(window.auto && window.auto(q)){ if(window.okOf && window.okOf(q,k)) total += Number(q.score||0); }
+          else { var sc = window.__aiScores && window.__aiScores[k]; if(sc) total += Number(sc.score||0); }
+        }catch(e){}
+      });
+      fetch('/api/track',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
+        body: JSON.stringify({code:code, kind:'attempt', uid:dv(), score:total,
+          total:(window.DATA||{}).total||0, startedAt:__klOpen,
+          duration:Math.round((Date.now()-__klOpen)/1000), src:'practice'})}).catch(function(){});
+    }catch(e){}
+  }
+
   async function autoGradeAll(){
     pullAnswer();
     var ks = [];
@@ -1392,6 +1433,7 @@ render();
       if (!ok && NO_MORE_BEANS) break;
     }
     try{ window.render && window.render(); }catch(e){}
+    __klTrackPractice();
   }
 
   // 点「提交本题/看答案」→ 自动判这道；点「确定交卷」→ 补判全卷

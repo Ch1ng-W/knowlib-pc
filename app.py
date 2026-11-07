@@ -864,17 +864,24 @@ class SettingsPage(QWidget):
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(12)
         self.stack = QStackedWidget()
-        self.stack.addWidget(self._build_general())
-        self.stack.addWidget(self._build_devices())
-        self.stack.addWidget(self._build_model())
-        self.stack.addWidget(self._build_hotkeys())
-        self.stack.addWidget(self._build_overlay())
+        for _w in (self._build_general(), self._build_devices(), self._build_model(),
+                   self._build_hotkeys(), self._build_overlay()):
+            self.stack.addWidget(self._wrap_scroll(_w))
         right.addWidget(self.stack, 1)
         lay.addLayout(right, 1)
         outer.addLayout(lay, 1)
 
         self.subnav.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.provider.currentTextChanged.connect(self._on_provider)
+
+    def _wrap_scroll(self, w):
+        """每个二级页自己滚，左侧导航固定不动。"""
+        sa = QScrollArea()
+        sa.setObjectName("pageScroll")
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setWidget(w)
+        return sa
 
     # ---------------- 设备（云同步 / 配对 / 设备管理）
     def _build_devices(self):
@@ -4463,11 +4470,8 @@ class MainWindow(QWidget):
         self.page_settings = SettingsPage(self.cfg, self, on_saved=self._on_settings_saved,
                                           on_back=lambda: self.show_page("home"))
         self.page_settings.on_preview = self._preview_overlay
-        self.page_settings_scroll = QScrollArea()
-        self.page_settings_scroll.setObjectName("pageScroll")
-        self.page_settings_scroll.setWidgetResizable(True)
-        self.page_settings_scroll.setFrameShape(QFrame.NoFrame)
-        self.page_settings_scroll.setWidget(self.page_settings)
+        # 设置页自己管滚动（左侧二级导航固定，右侧内容独立滚动）
+        self.page_settings_scroll = self.page_settings
         self.page_about = AboutPage(self, on_check=self._about_check)
         for p in (self.page_history, self.page_paper, self.page_bank,
                   self.page_settings_scroll, self.page_about):

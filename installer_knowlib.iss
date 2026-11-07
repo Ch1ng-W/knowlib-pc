@@ -1,14 +1,14 @@
 ﻿[Setup]
 AppId={{8E1B9C11-6A2F-4C0E-A4D1-7B2C5E9F3A21}
 AppName=Knowlib
-AppVersion=1.5.7
+AppVersion=1.5.8
 AppPublisher=Ching & 小团
 AppPublisherURL=https://knowlib.fun
 DefaultDirName={autopf}\Knowlib
 DefaultGroupName=Knowlib
 DisableProgramGroupPage=yes
 OutputDir=D:\SouTi\installer
-OutputBaseFilename=Knowlib-PC-1.5.7-setup
+OutputBaseFilename=Knowlib-PC-1.5.8-setup
 SetupIconFile=D:\SouTi\app.ico
 Compression=lzma2/max
 SolidCompression=yes

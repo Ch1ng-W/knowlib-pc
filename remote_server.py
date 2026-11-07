@@ -52,10 +52,12 @@ select{max-width:100%;text-overflow:ellipsis}img,table{max-width:100%}
 .sub{color:var(--fg2);font-size:12.5px;margin-bottom:14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
 input,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);font-size:15px}
+select{appearance:none;-webkit-appearance:none;padding-right:34px;background-repeat:no-repeat;background-position:right 12px center;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%236b7280' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E")}
 button{padding:11px 16px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:15px;font-weight:600}
 button.ghost{background:transparent;border:1px solid var(--line);color:var(--fg);font-weight:400}
-.row{display:flex;gap:8px;flex-wrap:wrap}
-.row>*{flex:1}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.row>*{flex:1 1 auto;min-width:0}
+.row>.tag{flex:0 0 auto;align-self:center}
 img.prev{width:100%;border-radius:10px;border:1px solid var(--line);display:block;margin-top:8px}
 .ans{white-space:pre-wrap;font-size:15px;line-height:1.75}
 .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:999px;background:var(--bg);border:1px solid var(--line);color:var(--fg2)}
@@ -80,7 +82,6 @@ img.prev{width:100%;border-radius:10px;border:1px solid var(--line);display:bloc
     <select id="win" onchange="pick()"></select>
     <div class="row" style="margin-top:10px">
       <button class="ghost" onclick="refresh()">刷新窗口</button>
-      <button class="ghost" onclick="toggleAuto()" id="autoBtn">自动刷新：开</button>
       <span id="pvState" class="tag">未预览</span>
     </div>
     <img id="prev" class="prev hide">
@@ -146,9 +147,9 @@ function pick(){
 }
 var PV_TIMER=null, PV_HASH='', PV_AUTO=true;
 function toggleAuto(){
-  PV_AUTO=!PV_AUTO;
-  $('autoBtn').textContent='自动刷新：'+(PV_AUTO?'开':'关');
-  if(PV_AUTO){ preview(); } else { stopPv(); $('pvState').textContent='手动'; }
+  PV_AUTO=true;
+  var b=$('autoBtn'); if(b){ b.style.display='none'; }
+  preview();
 }
 function stopPv(){ if(PV_TIMER){clearInterval(PV_TIMER);PV_TIMER=null;} }
 function preview(){

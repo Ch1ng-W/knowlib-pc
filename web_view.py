@@ -10,9 +10,31 @@
 """
 import json
 import os
+import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-WEB_DIR = os.path.join(_HERE, "web")
+
+
+def _find_web():
+    """源码运行 / PyInstaller onefolder(_internal) / onedir 都能找到 web/。"""
+    cands = []
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        cands.append(os.path.join(meipass, "web"))
+    cands.append(os.path.join(_HERE, "web"))
+    try:
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        cands.append(os.path.join(exe_dir, "web"))
+        cands.append(os.path.join(exe_dir, "_internal", "web"))
+    except Exception:
+        pass
+    for c in cands:
+        if os.path.exists(os.path.join(c, "q.html")):
+            return c
+    return cands[0] if cands else os.path.join(_HERE, "web")
+
+
+WEB_DIR = _find_web()
 
 try:
     from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineSettings, QWebEngineScript
