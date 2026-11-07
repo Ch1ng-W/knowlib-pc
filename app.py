@@ -32,6 +32,7 @@ import config_store
 import md_render
 import online_quiz
 import question_bank as qbank
+import remote_server
 import updater
 
 APP_TITLE = "Knowlib"
@@ -962,8 +963,134 @@ class SettingsPage(QWidget):
         c2.addWidget(self.sync_auto)
 
         v.addWidget(card2)
+
+        # ---------------- 手机遥控搜题
+        card3 = QFrame()
+        card3.setObjectName("card")
+        c3 = QVBoxLayout(card3)
+        c3.setContentsMargins(16, 14, 16, 14)
+        c3.setSpacing(10)
+        t3 = QLabel("手机遥控搜题（局域网）")
+        t3.setObjectName("sectionTitle")
+        c3.addWidget(t3)
+
+        tip3 = QLabel("PC 后台静默截图 + 识别 + 作答，答案只发到手机，PC 不弹任何窗口。"
+                      "手机需和电脑连同一个 WiFi。")
+        tip3.setObjectName("sub")
+        tip3.setWordWrap(True)
+        c3.addWidget(tip3)
+
+        self.remote_on = QCheckBox("开启手机遥控")
+        self.remote_on.setChecked(bool(self.cfg.get("remote_on", False)))
+        self.remote_on.toggled.connect(self.do_remote_toggle)
+        c3.addWidget(self.remote_on)
+
+        r3a = QHBoxLayout()
+        r3a.setSpacing(8)
+        r3a.addWidget(QLabel("端口"))
+        self.remote_port = QLineEdit(str(self.cfg.get("remote_port", 18765)))
+        self.remote_port.setFixedWidth(90)
+        r3a.addWidget(self.remote_port)
+        self.remote_state = QLabel("未开启")
+        self.remote_state.setObjectName("sub")
+        r3a.addWidget(self.remote_state, 1)
+        c3.addLayout(r3a)
+
+        r3b = QHBoxLayout()
+        r3b.setSpacing(8)
+        r3b.addWidget(QLabel("配对码"))
+        self.remote_code = QLabel("------")
+        self.remote_code.setStyleSheet("font-size:18px;font-weight:700;letter-spacing:3px;")
+        r3b.addWidget(self.remote_code)
+        r3b.addStretch(1)
+        self.btn_remote_qr = QPushButton("二维码")
+        self.btn_remote_web = QPushButton("打开控制页")
+        self.btn_remote_qr.clicked.connect(self.do_remote_qr)
+        self.btn_remote_web.clicked.connect(self.open_remote_page)
+        r3b.addWidget(self.btn_remote_qr)
+        r3b.addWidget(self.btn_remote_web)
+        c3.addLayout(r3b)
+
+        v.addWidget(card3)
         v.addStretch(1)
         return w
+
+    # ---------------- 手机遥控
+    @safe_slot
+    def do_remote_toggle(self, on):
+        try:
+            port = int(self.remote_port.text().strip() or "18765")
+        except Exception:
+            port = 18765
+        cfg = dict(self.cfg)
+        cfg["remote_port"] = port
+        if on:
+            ok, msg, url = remote_server.start(cfg, port, log=None)
+            self.remote_state.setText(msg if ok else ("启动失败：" + msg))
+        else:
+            remote_server.stop()
+            self.remote_state.setText("未开启")
+        info = remote_server.info()
+        self.remote_code.setText(info.get("pair_code") or "------")
+
+    @safe_slot
+    def do_remote_qr(self):
+        info = remote_server.info()
+        if not info.get("running"):
+            self.remote_state.setText("先开启遥控")
+            return
+        url = info.get("url") or ""
+        try:
+            import qrcode
+            import io as _io
+            qr = qrcode.QRCode(border=2, box_size=8)
+            qr.add_data(url)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+            buf = _io.BytesIO()
+            img.save(buf, format="PNG")
+            pm = QPixmap()
+            pm.loadFromData(buf.getvalue(), "PNG")
+        except Exception as e:
+            self.remote_state.setText("生成二维码失败：%s" % e)
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("手机遥控")
+        dlg.resize(380, 470)
+        v = QVBoxLayout(dlg)
+        tip = QLabel("手机连同一个 WiFi，扫码打开（或直接输网址）")
+        tip.setAlignment(Qt.AlignCenter)
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        lb = QLabel()
+        lb.setAlignment(Qt.AlignCenter)
+        lb.setPixmap(pm.scaled(280, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        v.addWidget(lb, 1)
+        u = QLabel(url)
+        u.setAlignment(Qt.AlignCenter)
+        u.setObjectName("sub")
+        v.addWidget(u)
+        c = QLabel("配对码：%s" % (info.get("pair_code") or ""))
+        c.setAlignment(Qt.AlignCenter)
+        c.setStyleSheet("font-size:18px;font-weight:700;letter-spacing:3px;")
+        v.addWidget(c)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        b = QPushButton("复制网址")
+        b.clicked.connect(lambda: (QApplication.clipboard().setText(url), tip.setText("已复制 ✓")))
+        row.addWidget(b)
+        okb = QPushButton("关闭")
+        okb.clicked.connect(dlg.accept)
+        row.addWidget(okb)
+        v.addLayout(row)
+        dlg.exec_()
+
+    def open_remote_page(self):
+        info = remote_server.info()
+        if not info.get("running"):
+            self.remote_state.setText("先开启遥控")
+            return
+        QDesktopServices.openUrl(QUrl(info.get("url") or ""))
 
     # ---------------- 云同步按钮
     @safe_slot
@@ -1443,6 +1570,11 @@ class SettingsPage(QWidget):
         c["sync_code"] = self.sync_code.text().strip()
         c["sync_key"] = self.sync_key.text().strip()
         c["sync_auto"] = self.sync_auto.isChecked()
+        c["remote_on"] = self.remote_on.isChecked()
+        try:
+            c["remote_port"] = int(self.remote_port.text().strip() or "18765")
+        except Exception:
+            c["remote_port"] = 18765
         hk = dict(c.get("hotkeys") or {})
         for action, _ in HOTKEY_ITEMS:
             b = self._hk_buttons.get(action)
@@ -3734,6 +3866,16 @@ class MainWindow(QWidget):
         self.cfg = config_store.load()
         self.add_log("设置已保存")
         self.setup_hotkeys()
+        # 手机遥控：按设置开/关
+        try:
+            if self.cfg.get("remote_on"):
+                ok, msg, _url = remote_server.start(self.cfg, int(self.cfg.get("remote_port", 18765) or 18765))
+                if not ok:
+                    self.add_log("手机遥控启动失败：" + msg)
+            else:
+                remote_server.stop()
+        except Exception as e:
+            self.add_log("手机遥控异常：%s" % e)
         try:
             self.overlay.apply_settings()
         except Exception:
@@ -4420,7 +4562,19 @@ def main():
 
     # 开机自启用 --tray：静默进托盘，不弹窗（除非还没配 Key）
     cfg = config_store.load()
-    if "--tray" in sys.argv and cfg.get("api_key"):
+    # 手机遥控：启动时自动开
+    try:
+        remote_server.set_cfg(cfg)
+        if cfg.get("remote_on"):
+            _ok, _msg, _u = remote_server.start(cfg, int(cfg.get("remote_port", 18765) or 18765))
+            if not _ok:
+                w.add_log("手机遥控启动失败：" + _msg)
+    except Exception as _e:
+        w.add_log("手机遥控异常：%s" % _e)
+
+    if "--silent" in sys.argv:
+        w.hide()
+    elif "--tray" in sys.argv and cfg.get("api_key"):
         if w.tray:
             w.hide()
         else:
