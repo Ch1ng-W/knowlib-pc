@@ -941,12 +941,16 @@ class SettingsPage(QWidget):
         self.btn_sync_now.setCursor(Qt.PointingHandCursor)
         self.btn_sync_web = QPushButton("网页版")
         self.btn_sync_web.setCursor(Qt.PointingHandCursor)
+        self.btn_sync_qr = QPushButton("二维码配对")
+        self.btn_sync_qr.setCursor(Qt.PointingHandCursor)
         self.btn_sync_new.clicked.connect(self.do_sync_new)
         self.btn_sync_now.clicked.connect(self.do_sync_now)
         self.btn_sync_web.clicked.connect(self.open_sync_web)
+        self.btn_sync_qr.clicked.connect(self.do_sync_qr)
         r3.addWidget(self.btn_sync_new)
         r3.addWidget(self.btn_sync_now)
         r3.addWidget(self.btn_sync_web)
+        r3.addWidget(self.btn_sync_qr)
         r3.addStretch(1)
         self.sync_state = QLabel(self.cfg.get("sync_last") or "尚未同步")
         self.sync_state.setObjectName("sub")
@@ -1001,6 +1005,63 @@ class SettingsPage(QWidget):
         code = self.sync_code.text().strip()
         url = "https://knowlib.fun/sync.html" + (("#" + code) if code else "")
         QDesktopServices.openUrl(QUrl(url))
+
+    @safe_slot
+    def do_sync_qr(self):
+        """生成配对二维码：手机扫一下就能打开网页版并自动带上同步码/密钥。"""
+        code = self.sync_code.text().strip()
+        key = self.sync_key.text().strip()
+        if not code:
+            self.sync_state.setText("先生成/填入同步码")
+            return
+        url = "https://knowlib.fun/sync.html?code=%s&key=%s" % (code, key)
+        try:
+            import qrcode
+            from PIL import Image as _Img
+            import io as _io
+            qr = qrcode.QRCode(border=2, box_size=8)
+            qr.add_data(url)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+            buf = _io.BytesIO()
+            img.save(buf, format="PNG")
+            pm = QPixmap()
+            pm.loadFromData(buf.getvalue(), "PNG")
+        except Exception as e:
+            self.sync_state.setText("生成二维码失败：%s" % e)
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("手机扫码配对")
+        dlg.resize(380, 460)
+        v = QVBoxLayout(dlg)
+        tip = QLabel("用手机相机/微信扫一下：\n自动打开网页版题库，并带上你的同步码")
+        tip.setAlignment(Qt.AlignCenter)
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        lb = QLabel()
+        lb.setAlignment(Qt.AlignCenter)
+        lb.setPixmap(pm.scaled(280, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        v.addWidget(lb, 1)
+        code_lb = QLabel("同步码：%s" % code)
+        code_lb.setAlignment(Qt.AlignCenter)
+        code_lb.setObjectName("sub")
+        v.addWidget(code_lb)
+        warn = QLabel("⚠️ 二维码里带着写入密钥：只给自己手机扫，别发给别人")
+        warn.setAlignment(Qt.AlignCenter)
+        warn.setWordWrap(True)
+        warn.setStyleSheet("color:#d9534f;font-size:12px;")
+        v.addWidget(warn)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        bcopy = QPushButton("复制链接")
+        bok = QPushButton("关闭")
+        row.addWidget(bcopy)
+        row.addWidget(bok)
+        v.addLayout(row)
+        bcopy.clicked.connect(lambda: (QApplication.clipboard().setText(url), tip.setText("链接已复制 ✓")))
+        bok.clicked.connect(dlg.accept)
+        dlg.exec_()
 
     # ---------------- 模型与密钥
     def _build_model(self):
@@ -2568,10 +2629,12 @@ class BankPage(QWidget):
             self.stat.setText("生成链接失败：%s" % e)
             return
         self.stat.setText("已生成在线试卷 ✓")
-        # 作者密钥：以后看后台要它（存在本地 config，丢了就只能重建）
         import secrets
         code = online_quiz.code_from(url) or ""
-        owner_key = "".join(secrets.choice("abcdefghjkmnpqrstuvwxyz23456789") for _ in range(8))
+        # 作者密钥：跟同步密钥保持一致，这样任何设备用同一个同步码都能看后台
+        owner_key = (config_store.load().get("sync_key") or "").strip()
+        if len(owner_key) < 4:
+            owner_key = "".join(secrets.choice("abcdefghjkmnpqrstuvwxyz23456789") for _ in range(8))
         claimed = False
         try:
             claimed = online_quiz.claim_owner(code, owner_key) if code else False

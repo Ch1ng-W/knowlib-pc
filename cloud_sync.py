@@ -144,11 +144,30 @@ def sync_now(cfg=None):
     added2, updated2 = qbank.apply_remote(res.get("q") or [])
     hist_added = merge_history(res.get("h") or [])
 
+    # 把云端「我发布过的试卷」合并回本地，这样换设备也能在组卷菜单里看到后台
+    papers_got = 0
+    try:
+        cfg2 = config_store.load()
+        local = dict(cfg2.get("papers") or {})
+        for it in (res.get("p") or []):
+            c = str(it.get("code") or "")
+            if not c:
+                continue
+            t = int(it.get("t") or 0)
+            if c not in local or t > int((local[c] or {}).get("t") or 0):
+                local[c] = {"key": it.get("key") or "", "title": it.get("title") or "", "t": t}
+                papers_got += 1
+        cfg2["papers"] = local
+        config_store.save(cfg2)
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "added": added + added2,
         "updated": updated + updated2,
         "hist_added": hist_added,
+        "papers_got": papers_got,
         "sent": len(qloc),
         "total": len(res.get("q") or []),
         "msg": "同步完成：新增 %d、更新 %d、历史 +%d" % (added + added2, updated + updated2, hist_added),
