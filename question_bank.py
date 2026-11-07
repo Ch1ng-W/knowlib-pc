@@ -42,6 +42,9 @@ def init_db():
             cols = [r[1] for r in c.execute("PRAGMA table_info(questions)").fetchall()]
             if "qtype" not in cols:
                 c.execute("ALTER TABLE questions ADD COLUMN qtype TEXT DEFAULT ''")
+            if "upd" not in cols:
+                c.execute("ALTER TABLE questions ADD COLUMN upd INTEGER DEFAULT 0")
+                c.execute("UPDATE questions SET upd = CAST(strftime('%s','now') AS INTEGER)*1000 WHERE upd IS NULL OR upd=0")
         return True
     except Exception:
         return False
@@ -91,19 +94,20 @@ def save(q_text, full_answer, source="ai"):
     if not (ans or sol):
         return False
     now = time.strftime("%Y-%m-%d %H:%M:%S")
+    upd = int(time.time() * 1000)
     qtype = detect_type(text, ans)
     try:
         with _conn() as c:
             c.execute(
-                "INSERT INTO questions(norm,q_text,answer,solution,source,hits,created,used,qtype)"
-                " VALUES(?,?,?,?,?,0,?,?,?)"
+                "INSERT INTO questions(norm,q_text,answer,solution,source,hits,created,used,qtype,upd)"
+                " VALUES(?,?,?,?,?,0,?,?,?,?)"
                 " ON CONFLICT(norm) DO UPDATE SET"
                 " q_text=excluded.q_text, answer=excluded.answer,"
                 " solution=excluded.solution, source=excluded.source,"
-                " used=excluded.used,"
+                " used=excluded.used, upd=excluded.upd,"
                 " qtype=CASE WHEN questions.qtype IS NULL OR questions.qtype=''"
                 "  THEN excluded.qtype ELSE questions.qtype END",
-                (norm, text, ans, sol, source, now, now, qtype))
+                (norm, text, ans, sol, source, now, now, qtype, upd))
         return True
     except Exception:
         return False
@@ -243,6 +247,64 @@ def delete(qid):
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------- 跨端同步
+def export_sync(limit=5000):
+    """导出给云同步用的最小字段（key 用 norm，天然去重）。"""
+    init_db()
+    out = []
+    try:
+        with _conn() as c:
+            rows = c.execute("SELECT norm,q_text,answer,solution,qtype,upd FROM questions ORDER BY id DESC LIMIT ?",
+                             (limit,)).fetchall()
+        for r in rows:
+            out.append({
+                "k": r["norm"], "q": r["q_text"] or "", "a": r["answer"] or "",
+                "s": r["solution"] or "", "ty": r["qtype"] or "",
+                "t": int(r["upd"] or 0),
+            })
+    except Exception:
+        pass
+    return out
+
+
+def apply_remote(items_):
+    """把云端条目合并进本地：同 norm 只保留 upd 更新的。返回 (新增, 更新)。"""
+    init_db()
+    added = updated = 0
+    try:
+        with _conn() as c:
+            for it in items_ or []:
+                try:
+                    k = (it.get("k") or "").strip()
+                    if not k:
+                        continue
+                    t = int(it.get("t") or 0)
+                    row = c.execute("SELECT id,upd FROM questions WHERE norm=?", (k,)).fetchone()
+                    if row is None:
+                        c.execute(
+                            "INSERT INTO questions(norm,q_text,answer,solution,source,hits,created,used,qtype,upd)"
+                            " VALUES(?,?,?,?,?,0,?,?,?,?)",
+                            (k, it.get("q") or "", it.get("a") or "", it.get("s") or "",
+                             "sync", _now_str(), _now_str(), it.get("ty") or "", t))
+                        added += 1
+                    elif t > int(row["upd"] or 0):
+                        c.execute(
+                            "UPDATE questions SET q_text=?,answer=?,solution=?,qtype=?,upd=? WHERE id=?",
+                            (it.get("q") or "", it.get("a") or "", it.get("s") or "",
+                             it.get("ty") or "", t, row["id"]))
+                        updated += 1
+                except Exception:
+                    continue
+        return added, updated
+    except Exception:
+        return added, updated
+
+
+def _now_str():
+    import time as _t
+    return _t.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def clear():

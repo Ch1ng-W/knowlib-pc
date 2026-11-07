@@ -895,8 +895,112 @@ class SettingsPage(QWidget):
         c.addWidget(self.check_update)
 
         v.addWidget(card)
+
+        # ---------------- 云同步（跨端：PC / 手机 / 网页）
+        card2 = QFrame()
+        card2.setObjectName("card")
+        c2 = QVBoxLayout(card2)
+        c2.setContentsMargins(16, 14, 16, 14)
+        c2.setSpacing(10)
+        t2 = QLabel("云同步（题库 / 搜题记录 / 试卷）")
+        t2.setObjectName("sectionTitle")
+        c2.addWidget(t2)
+
+        tip2 = QLabel("两端（或多端）填同一个同步码，就能拿到同一份题库和搜题记录。"
+                      "新设备直接输码；没装 App 的手机可以用网页版。")
+        tip2.setObjectName("sub")
+        tip2.setWordWrap(True)
+        c2.addWidget(tip2)
+
+        r1 = QHBoxLayout()
+        r1.setSpacing(8)
+        lb1 = QLabel("同步码")
+        lb1.setMinimumWidth(64)
+        self.sync_code = QLineEdit(self.cfg.get("sync_code", "") or "")
+        self.sync_code.setPlaceholderText("8 位同步码，例：4j5fsmcg")
+        r1.addWidget(lb1)
+        r1.addWidget(self.sync_code, 1)
+        c2.addLayout(r1)
+
+        r2 = QHBoxLayout()
+        r2.setSpacing(8)
+        lb2 = QLabel("同步密钥")
+        lb2.setMinimumWidth(64)
+        self.sync_key = QLineEdit(self.cfg.get("sync_key", "") or "")
+        self.sync_key.setPlaceholderText("新建同步码时自动生成，写入/读取都要它")
+        r2.addWidget(lb2)
+        r2.addWidget(self.sync_key, 1)
+        c2.addLayout(r2)
+
+        r3 = QHBoxLayout()
+        r3.setSpacing(8)
+        self.btn_sync_new = QPushButton("新建同步码")
+        self.btn_sync_new.setCursor(Qt.PointingHandCursor)
+        self.btn_sync_now = QPushButton("立即同步")
+        self.btn_sync_now.setObjectName("primary")
+        self.btn_sync_now.setCursor(Qt.PointingHandCursor)
+        self.btn_sync_web = QPushButton("网页版")
+        self.btn_sync_web.setCursor(Qt.PointingHandCursor)
+        self.btn_sync_new.clicked.connect(self.do_sync_new)
+        self.btn_sync_now.clicked.connect(self.do_sync_now)
+        self.btn_sync_web.clicked.connect(self.open_sync_web)
+        r3.addWidget(self.btn_sync_new)
+        r3.addWidget(self.btn_sync_now)
+        r3.addWidget(self.btn_sync_web)
+        r3.addStretch(1)
+        self.sync_state = QLabel(self.cfg.get("sync_last") or "尚未同步")
+        self.sync_state.setObjectName("sub")
+        r3.addWidget(self.sync_state)
+        c2.addLayout(r3)
+
+        self.sync_auto = QCheckBox("启动时自动同步（每 10 分钟再同步一次）")
+        self.sync_auto.setChecked(bool(self.cfg.get("sync_auto", True)))
+        c2.addWidget(self.sync_auto)
+
+        v.addWidget(card2)
         v.addStretch(1)
         return w
+
+    # ---------------- 云同步按钮
+    @safe_slot
+    def do_sync_new(self):
+        import cloud_sync
+        if self.sync_code.text().strip() and not ask_yes(
+                self, "新建同步码", "现在已经有同步码了，新建会换成一套全新的（旧数据不丢，但两端都要重填）。继续？"):
+            return
+        j = cloud_sync.new_sync_code()
+        if not j.get("ok"):
+            self.sync_state.setText("新建失败：%s" % (j.get("message") or "网络不通"))
+            return
+        self.sync_code.setText(j.get("code") or "")
+        self.sync_key.setText(j.get("key") or "")
+        self.sync_state.setText("已生成新同步码（记得保存设置）")
+
+    @safe_slot
+    def do_sync_now(self):
+        import cloud_sync
+        code = self.sync_code.text().strip()
+        key = self.sync_key.text().strip()
+        if not code or not key:
+            self.sync_state.setText("先填同步码和密钥")
+            return
+        cfg = dict(self.cfg)
+        cfg["sync_code"] = code
+        cfg["sync_key"] = key
+        self.sync_state.setText("同步中…")
+        QApplication.processEvents()
+        r = cloud_sync.sync_now(cfg)
+        self.sync_state.setText(r.get("msg") or "")
+        if r.get("ok"):
+            self.cfg["sync_code"] = code
+            self.cfg["sync_key"] = key
+            self.cfg["sync_last"] = time.strftime("%m-%d %H:%M 已同步")
+            config_store.save(self.cfg)
+
+    def open_sync_web(self):
+        code = self.sync_code.text().strip()
+        url = "https://knowlib.fun/sync.html" + (("#" + code) if code else "")
+        QDesktopServices.openUrl(QUrl(url))
 
     # ---------------- 模型与密钥
     def _build_model(self):
@@ -1275,6 +1379,9 @@ class SettingsPage(QWidget):
         c["check_update"] = self.check_update.isChecked()
         c["close_action"] = self.close_action.currentData() or "tray"
         c["animations"] = self.animations.isChecked()
+        c["sync_code"] = self.sync_code.text().strip()
+        c["sync_key"] = self.sync_key.text().strip()
+        c["sync_auto"] = self.sync_auto.isChecked()
         hk = dict(c.get("hotkeys") or {})
         for action, _ in HOTKEY_ITEMS:
             b = self._hk_buttons.get(action)
@@ -3360,6 +3467,15 @@ class MainWindow(QWidget):
         self.setup_hotkeys()
         self.setup_tray()
 
+        # 云同步：启动后自动同步一次，之后每 10 分钟
+        self._sync_th = None
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(10 * 60 * 1000)
+        self._sync_timer.timeout.connect(self._auto_sync)
+        if self.cfg.get("sync_auto", True) and (self.cfg.get("sync_code") or "").strip():
+            QTimer.singleShot(3500, self._auto_sync)
+            self._sync_timer.start()
+
     # -------- 页面切换（窗口可自由缩放，记住每个页面的尺寸）
     PAGE_SIZES = {"home": (470, 492), "history": (900, 600),
                   "bank": (900, 620), "settings": (580, 762)}
@@ -3712,6 +3828,43 @@ class MainWindow(QWidget):
         self._dl.fail.connect(self._on_dl_fail)
         self.add_log("开始下载更新…")
         self._dl.start()
+
+    # -------- 云同步
+    @safe_slot
+    def _auto_sync(self):
+        if not self.cfg.get("sync_auto", True):
+            return
+        if not (self.cfg.get("sync_code") or "").strip():
+            return
+        if self._sync_th is not None and self._sync_th.isRunning():
+            return
+
+        class _S(QThread):
+            done = pyqtSignal(object)
+
+            def run(self_):
+                try:
+                    import cloud_sync
+                    self_.done.emit(cloud_sync.sync_now())
+                except Exception as e:
+                    self_.done.emit({"ok": False, "msg": "%s: %s" % (type(e).__name__, e)})
+
+        th = _S(self)
+        th.done.connect(self._on_sync_done)
+        self._sync_th = th
+        th.start()
+
+    @safe_slot
+    def _on_sync_done(self, r):
+        if r.get("ok"):
+            self.cfg["sync_last"] = time.strftime("%m-%d %H:%M 已同步")
+            try:
+                config_store.save(self.cfg)
+            except Exception:
+                pass
+            self.add_log("云同步：" + (r.get("msg") or "完成"))
+        else:
+            self.add_log("云同步失败：" + (r.get("msg") or "未知原因"))
 
     # -------- 状态
     @safe_slot
