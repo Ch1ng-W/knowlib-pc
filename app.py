@@ -971,6 +971,10 @@ class SettingsPage(QWidget):
         r3.addWidget(self.btn_sync_now)
         r3.addWidget(self.btn_sync_web)
         r3.addWidget(self.btn_sync_qr)
+        self.btn_sync_dev = QPushButton("设备")
+        self.btn_sync_dev.setCursor(Qt.PointingHandCursor)
+        self.btn_sync_dev.clicked.connect(self.do_sync_devices)
+        r3.addWidget(self.btn_sync_dev)
         r3.addStretch(1)
         self.sync_state = QLabel(self.cfg.get("sync_last") or "尚未同步")
         self.sync_state.setObjectName("sub")
@@ -1145,7 +1149,58 @@ class SettingsPage(QWidget):
             self.cfg["sync_code"] = code
             self.cfg["sync_key"] = key
             self.cfg["sync_last"] = time.strftime("%m-%d %H:%M 已同步")
+            if r.get("devices"):
+                self.cfg["sync_devices"] = r.get("devices")
             config_store.save(self.cfg)
+
+    @safe_slot
+    def do_sync_devices(self):
+        devs = self.cfg.get("sync_devices") or []
+        if not devs:
+            self.sync_state.setText("先点一次「立即同步」，再来看设备")
+            return
+        mine = set(self.cfg.get("sync_mine") or [])
+        dlg = QDialog(self)
+        dlg.setWindowTitle("同步设备")
+        dlg.resize(520, 360)
+        v = QVBoxLayout(dlg)
+        tip = QLabel("勾选的是「我的设备」（换设备时用来确认）。\n"
+                     "所有设备共用同一个同步码，内容更新后下次同步自动合并。")
+        tip.setObjectName("sub")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        lw = QListWidget()
+        for d in sorted(devs, key=lambda x: x.get("ts") or 0, reverse=True):
+            did = d.get("id") or ""
+            name = d.get("name") or did
+            ts = d.get("ts") or 0
+            when = time.strftime("%m-%d %H:%M", time.localtime(ts / 1000.0)) if ts else ""
+            it = QListWidgetItem("%s  ·  %s  ·  最近同步 %s" % (name, d.get("os") or "", when))
+            it.setData(Qt.UserRole, did)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if did in mine else Qt.Unchecked)
+            lw.addItem(it)
+        v.addWidget(lw, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        bok = QPushButton("保存")
+        bok.setObjectName("primary")
+        bok.clicked.connect(dlg.accept)
+        bcancel = QPushButton("取消")
+        bcancel.clicked.connect(dlg.reject)
+        row.addWidget(bcancel)
+        row.addWidget(bok)
+        v.addLayout(row)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        picked = []
+        for i in range(lw.count()):
+            it = lw.item(i)
+            if it.checkState() == Qt.Checked:
+                picked.append(it.data(Qt.UserRole))
+        self.cfg["sync_mine"] = picked
+        config_store.save(self.cfg)
+        self.sync_state.setText("已记住 %d 台我的设备" % len(picked))
 
     def open_sync_web(self):
         code = self.sync_code.text().strip()
@@ -1295,8 +1350,8 @@ class SettingsPage(QWidget):
         self.bank_first.setChecked(bool(self.cfg.get("bank_first", True)))
         c.addWidget(self.bank_first)
 
-        self.auto_bank = QCheckBox("自动把 AI 答案存进题库（下次同题秒回）")
-        self.auto_bank.setChecked(bool(self.cfg.get("auto_save_bank", True)))
+        self.auto_bank = QCheckBox("自动把 AI 答案存进题库（默认关：只在手动收藏时入库）")
+        self.auto_bank.setChecked(bool(self.cfg.get("auto_save_bank", False)))
         c.addWidget(self.auto_bank)
 
         v.addWidget(card)
@@ -2876,7 +2931,8 @@ class PaperHubPage(QWidget):
     def open_hist(self):
         code = self._hist_sel()[0]
         if code:
-            QDesktopServices.openUrl(QUrl(online_quiz.BASE + "/s/" + code))
+            self.show_tab("online")
+            self.online.load_code(code)
 
     def hist_dash(self):
         code, key, title = self._hist_sel()
@@ -3059,19 +3115,18 @@ class BankPage(QWidget):
         tools.setHorizontalSpacing(8)
         tools.setVerticalSpacing(8)
         cells = [
-            (self.btn_edit, 0, 0), (self.btn_new, 0, 1), (self.btn_del, 0, 2),
-            (self.btn_sel, 1, 0),
-            (self.btn_export_menu, 2, 0), (self.btn_import, 2, 1),
-            (self.btn_clear, 2, 2),
-            (self.btn_paper, 1, 3),
-            (self.btn_close, 3, 2),
+            (self.btn_edit, 0, 0), (self.btn_new, 0, 1),
+            (self.btn_del, 0, 2), (self.btn_sel, 0, 3),
+            (self.btn_export_menu, 1, 0), (self.btn_paper, 1, 1),
+            (self.btn_import, 1, 2), (self.btn_clear, 1, 3),
+            (self.btn_close, 2, 3),
         ]
         for b, r, col in cells:
             b.setCursor(Qt.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + 30)
             tools.addWidget(b, r, col)
-        tools.addWidget(self.chk_answer, 1, 1, 1, 2)
+        tools.addWidget(self.chk_answer, 2, 0, 1, 3)
         tools.setColumnStretch(4, 1)
         right.addLayout(tools)
         body.addLayout(right, 1)
@@ -4620,6 +4675,8 @@ class MainWindow(QWidget):
     def _on_sync_done(self, r):
         if r.get("ok"):
             self.cfg["sync_last"] = time.strftime("%m-%d %H:%M 已同步")
+            if r.get("devices"):
+                self.cfg["sync_devices"] = r.get("devices")
             try:
                 config_store.save(self.cfg)
             except Exception:
@@ -4846,7 +4903,7 @@ class MainWindow(QWidget):
 
         # 存本地题库（题库命中的不重复存）
         if (not from_bank and self.last_question
-                and self.cfg.get("auto_save_bank", True)):
+                and self.cfg.get("auto_save_bank", False)):
             try:
                 if qbank.save(self.last_question, full):
                     self.add_log("已存入本地题库")

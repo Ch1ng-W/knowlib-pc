@@ -6,8 +6,82 @@ md_render.py —— 轻量 Markdown + LaTeX → HTML（给 QTextBrowser 用）
 公式：$...$ 、$$...$$ 、\\( \\) 、\\[ \\]  → 转成 Qt 富文本能显示的 HTML
 """
 
+import hashlib
 import html
+import os
 import re
+import tempfile
+
+
+# ---------------------------------------------------------------- 分式（上下结构）
+_FRAC_CACHE = {}
+_FRAC_DIR = os.path.join(tempfile.gettempdir(), "knowlib_frac")
+_CUR_FG = "#e6e9ef"
+
+
+def _plain_text(h):
+    return re.sub(r"<[^>]+>", "", h or "").replace("&nbsp;", " ")
+
+
+def _frac_image(num_html, den_html):
+    """把分式画成小 PNG（Qt 富文本没法做真正的上下分式）。"""
+    key = (num_html, den_html, _CUR_FG)
+    if key in _FRAC_CACHE:
+        return _FRAC_CACHE[key]
+    out = None
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        os.makedirs(_FRAC_DIR, exist_ok=True)
+        scale = 3
+        size = 24
+        font = None
+        for fp in (r"C:\Windows\Fonts\cambria.ttc", r"C:\Windows\Fonts\msyh.ttc",
+                   r"C:\Windows\Fonts\segoeui.ttf"):
+            try:
+                font = ImageFont.truetype(fp, size * scale)
+                break
+            except Exception:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+
+        nt = _plain_text(num_html).strip() or " "
+        dt = _plain_text(den_html).strip() or " "
+
+        def _wh(t):
+            b = font.getbbox(t)
+            return b[2] - b[0], b[3] - b[1]
+
+        wn, _hn = _wh(nt)
+        wd, _hd = _wh(dt)
+        pad = 4 * scale
+        W = max(wn, wd) + pad * 2
+        lh = int(size * scale * 1.3)
+        H = lh * 2 + 6 * scale
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        col = _CUR_FG if _CUR_FG.startswith("#") else "#e6e9ef"
+        try:
+            col = tuple(int(col[i:i + 2], 16) for i in (1, 3, 5)) + (255,)
+        except Exception:
+            col = (230, 233, 239, 255)
+        d.text(((W - wn) // 2, 0), nt, font=font, fill=col)
+        y = lh + 2 * scale
+        d.line((pad, y, W - pad, y), fill=col, width=max(1, scale))
+        d.text(((W - wd) // 2, y + 3 * scale), dt, font=font, fill=col)
+        fn = hashlib.md5(("%s|%s|%s" % (nt, dt, _CUR_FG)).encode("utf-8")).hexdigest()[:16] + ".png"
+        path = os.path.join(_FRAC_DIR, fn)
+        img.save(path)
+        w_css = max(10, int(W / scale))
+        h_css = max(10, int(H / scale))
+        out = ('<img src="file:///%s" width="%d" height="%d" style="vertical-align:middle">'
+               % (path.replace("\\", "/"), w_css, h_css))
+    except Exception:
+        out = None
+    _FRAC_CACHE[key] = out
+    return out
+
 
 # ---------------------------------------------------------------- LaTeX 符号
 _SYM = {
@@ -101,7 +175,11 @@ def latex_to_html(src, display=False):
                 b, i = _read_group(s, i)
                 ha = latex_to_html(a)
                 hb = latex_to_html(b)
-                out.append(f'<span style="white-space:nowrap">{ha}/{hb}</span>')
+                _img = _frac_image(ha, hb)
+                if _img:
+                    out.append(_img)
+                else:
+                    out.append(f'<span style="white-space:nowrap">{ha}/{hb}</span>')
                 continue
             if name == "sqrt":
                 idx = ""
@@ -228,6 +306,8 @@ def to_html(md, color="#e6e9ef", accent="#8fb6ff", font_size=13):
     if not md:
         return f'<div style="color:#7f8896;padding:12px">（空）</div>'
 
+    global _CUR_FG
+    _CUR_FG = color or "#e6e9ef"
     src = (md or "").replace("\r\n", "\n").replace("\r", "\n")
     # 先把块级公式抽出来，避免被按行切碎
     blocks = []

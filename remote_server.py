@@ -375,8 +375,12 @@ class _Handler(BaseHTTPRequestHandler):
             if img is None:
                 self._json(200, {"ok": False, "message": "截图失败"})
                 return
-            b = _jpeg_b64(img, quality=70, max_w=760)
-            self._send(200, b, "text/plain; charset=utf-8")
+            b64 = _jpeg_b64(img, quality=70, max_w=760)
+            try:
+                raw = base64.b64decode(b64)
+            except Exception:
+                raw = b""
+            self._send(200, raw, "image/jpeg")
             return
         self._json(404, {"ok": False})
 

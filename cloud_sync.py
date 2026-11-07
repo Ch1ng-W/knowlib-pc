@@ -135,7 +135,8 @@ def sync_now(cfg=None):
     added, updated = qbank.apply_remote(remote.get("q") or [])
 
     st2, res = _req("POST", "/api/sync", {"code": code, "key": key,
-                                          "q": qloc, "h": hloc, "p": papers})
+                                          "q": qloc, "h": hloc, "p": papers,
+                                          "device": _device_info()})
     if st2 == 403:
         return {"ok": False, "msg": "同步密钥不对"}
     if st2 != 200 or not res.get("ok"):
@@ -168,6 +169,7 @@ def sync_now(cfg=None):
         "updated": updated + updated2,
         "hist_added": hist_added,
         "papers_got": papers_got,
+        "devices": list((res.get("dev") or {}).values()),
         "sent": len(qloc),
         "total": len(res.get("q") or []),
         "msg": "同步完成：新增 %d、更新 %d、历史 +%d" % (added + added2, updated + updated2, hist_added),
