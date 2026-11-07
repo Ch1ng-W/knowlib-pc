@@ -4070,6 +4070,16 @@ def theme_colors(theme=None):
     }
 
 
+NAV_TINT = {
+    "home": "#0A84FF",      # 蓝
+    "online": "#7C5CFF",    # 紫
+    "history": "#12B886",   # 青绿
+    "bank": "#F59F00",      # 璃珀
+    "settings": "#5C7CFA",  # 靖蓝
+    "about": "#E64980",     # 粉
+}
+
+
 def build_qss(t):
     return (
         "QWidget{font-family:'Segoe UI Variable Text','Microsoft YaHei UI';"
@@ -4081,11 +4091,18 @@ def build_qss(t):
         "QPushButton#navItem{text-align:left;padding:8px 10px;border:none;"
         f"border-radius:4px;background:transparent;color:{t['text']};font-size:13px;}}"
         f"QPushButton#navItem:hover{{background:{t['hover']};}}"
-        f"QPushButton#navItem:checked{{background:{t['sel']};font-weight:600;}}"
+        f"QPushButton#navItem:checked{{background:{t['sel']};font-weight:600;"
+        "border-left:3px solid #0A84FF;padding-left:7px;}"
+        "QPushButton#navItem[key=\"home\"]:checked{border-left-color:#0A84FF;}"
+        "QPushButton#navItem[key=\"online\"]:checked{border-left-color:#7C5CFF;}"
+        "QPushButton#navItem[key=\"history\"]:checked{border-left-color:#12B886;}"
+        "QPushButton#navItem[key=\"bank\"]:checked{border-left-color:#F59F00;}"
+        "QPushButton#navItem[key=\"settings\"]:checked{border-left-color:#5C7CFA;}"
+        "QPushButton#navItem[key=\"about\"]:checked{border-left-color:#E64980;}"
         f"QPushButton#navSub{{text-align:left;padding:6px 10px 6px 30px;border:none;"
         f"border-radius:4px;background:transparent;color:{t['muted']};font-size:12.5px;}}"
         f"QPushButton#navSub:hover{{background:{t['hover']};color:{t['text']};}}"
-        f"QPushButton#navSub:checked{{background:{t['sel']};color:{t['text']};font-weight:600;}}"
+        f"QPushButton#navSub:checked{{background:{t['sel']};color:#7C5CFF;font-weight:600;}}"
         f"QPushButton#stepBtn{{background:{t['btn']};border:1px solid {t['btnBorder']};"
         f"border-radius:6px;padding:0px;font-size:15px;font-weight:600;}}"
         f"QPushButton#stepBtn:hover{{background:{t['btnHover']};}}"
@@ -4094,7 +4111,7 @@ def build_qss(t):
         f"QListWidget#subNav{{background:transparent;border:none;padding:0px;}}"
         f"QListWidget#subNav::item{{padding:8px 10px;border-radius:4px;color:{t['text']};}}"
         f"QListWidget#subNav::item:hover{{background:{t['hover']};}}"
-        f"QListWidget#subNav::item:selected{{background:{t['sel']};font-weight:600;}}"
+        f"QListWidget#subNav::item:selected{{background:rgba(92,124,250,0.16);color:#3D7EFF;font-weight:600;}}"
         "QComboBox::drop-down{border:none;width:26px;}"
         "QComboBox::down-arrow{image:none;width:0px;height:0px;}"
         f"QComboBox QAbstractItemView{{background:{t['card']};color:{t['text']};"
@@ -4107,11 +4124,14 @@ def build_qss(t):
         f"border-radius:4px;padding:6px 14px;color:{t['text']};}}"
         f"QPushButton:hover{{background:{t['btnHover']};}}"
         f"QPushButton:disabled{{color:{t['muted']};}}"
-        f"QPushButton#primary{{background:{t['accent']};color:{t['accentText']};"
-        "border:none;font-weight:600;}"
-        f"QPushButton#primary:hover{{background:{t['accentHover']};}}"
-        f"QPushButton#updateBtn{{background:{t['accent']};color:{t['accentText']};"
-        "border:none;font-weight:600;padding:5px 10px;}"
+        f"QPushButton#primary{{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+        "stop:0 #3D7EFF, stop:1 #7C5CFF);"
+        f"color:{t['accentText']};border:none;font-weight:600;}}"
+        f"QPushButton#primary:hover{{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+        "stop:0 #5A92FF, stop:1 #9276FF);}"
+        f"QPushButton#updateBtn{{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+        "stop:0 #FF9F0A, stop:1 #E64980);"
+        f"color:#fff;border:none;font-weight:600;padding:5px 10px;}}"
         f"QLineEdit,QComboBox,QSpinBox{{background:{t['input']};color:{t['text']};"
         f"border:1px solid {t['inputBorder']};border-radius:4px;padding:5px 8px;}}"
         f"QPlainTextEdit{{background:{t['log']};color:{t['text']};"
@@ -4121,7 +4141,7 @@ def build_qss(t):
         f"QListWidget{{background:{t['input']};color:{t['text']};"
         f"border:1px solid {t['border']};border-radius:6px;padding:4px;}}"
         "QListWidget::item{padding:7px 8px;border-radius:4px;}"
-        f"QListWidget::item:selected{{background:{t['sel']};color:{t['text']};}}"
+        f"QListWidget::item:selected{{background:rgba(10,132,255,0.14);color:{t['text']};}}"
         f"QCheckBox{{color:{t['text']};}}"
         "QScrollBar:vertical{background:transparent;width:10px;margin:0px;}"
         f"QScrollBar::handle:vertical{{background:{t['sb']};border-radius:4px;"
@@ -4379,7 +4399,8 @@ class MainWindow(QWidget):
                                 ("settings", "\ue713", "设置"),
                                 ("about", "\ue946", "关于")):
             b = QPushButton(text)
-            b.setIcon(glyph_icon(icon, self.theme["text"], 16))
+            b.setIcon(glyph_icon(icon, NAV_TINT.get(key, self.theme["text"]), 16))
+            b.setProperty("key", key)
             b.setIconSize(QSize(16, 16))
             b.setObjectName("navItem")
             b.setCheckable(True)
