@@ -29,8 +29,8 @@ html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);
 main{flex:1 1 auto;min-width:0}
 aside{flex:0 0 244px;width:244px;position:sticky;top:64px;align-self:flex-start}
 
-.stage{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:24px 28px 18px;
-  box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:440px}
+.stage{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 30px;
+  box-shadow:var(--shadow);min-height:360px}
 .qhead{display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .chip{font-size:12px;color:#7C5CFF;background:#7C5CFF18;border-radius:999px;padding:3px 11px;font-weight:600}
 .qno{margin-left:auto;font-size:12.5px;color:var(--fg2)}
@@ -54,13 +54,15 @@ textarea.draft{width:100%;min-height:90px;margin-top:14px;border:1px solid var(-
 .ansbox .val{font-size:17px;color:var(--accent);font-weight:600;word-break:break-word}
 .ansbox .ana{font-size:15px;color:var(--fg);margin-top:10px;line-height:1.85}
 
-.foot{display:flex;align-items:center;gap:10px;margin-top:auto;padding-top:18px;flex-wrap:wrap}
+.footbar{display:flex;align-items:center;gap:10px;margin-top:14px;padding:0 2px;flex-wrap:wrap}
+.footbar .sp{flex:1}
+.btn.nav{min-width:104px}
 .btn{border:none;border-radius:10px;padding:9px 16px;font-size:14px;font-weight:600;
   background:var(--accent);color:#fff;cursor:pointer;font-family:inherit}
 .btn.ghost{background:transparent;color:var(--fg);border:1px solid var(--line);font-weight:500}
 .btn.ghost:hover{border-color:var(--accent);color:var(--accent)}
 .btn:disabled{opacity:.45;cursor:default}
-.btn.nav{min-width:96px}
+.btn.nav{min-width:104px}
 .foot .sp{flex:1}
 
 aside .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:15px;
@@ -93,6 +95,7 @@ aside h3{margin:0 0 11px;font-size:13.5px;color:var(--fg2);font-weight:600}
 <div class="layout">
   <main>
     <div class="stage" id="stage"></div>
+    <div class="footbar" id="footbar"></div>
   </main>
   <aside>
     <div class="card">
@@ -191,14 +194,16 @@ function render(){
     h += '<textarea class="draft" placeholder="在这里作答（可选）"></textarea>';
   }
   h += '<div class="ansbox" id="ansbox"></div>';
-  h += '<div class="foot">';
-  h += '<button class="btn ghost nav" id="prev"' + (cur === 0 ? ' disabled' : '') + '>← 上一题</button>';
-  h += '<button class="btn ghost nav" id="next"' + (cur === QS.length - 1 ? ' disabled' : '') + '>下一题 →</button>';
-  h += '<span class="sp"></span>';
-  h += '<button class="btn ghost" id="showans">看答案</button>';
-  h += '<button class="btn" id="saveq">＋ 加入题库</button>';
-  h += '</div>';
   document.getElementById('stage').innerHTML = h;
+
+  var f = '';
+  f += '<button class="btn ghost nav" id="prev"' + (cur === 0 ? ' disabled' : '') + '>← 上一题</button>';
+  f += '<button class="btn ghost nav" id="next"' + (cur === QS.length - 1 ? ' disabled' : '') + '>下一题 →</button>';
+  f += '<span class="sp"></span>';
+  f += '<button class="btn ghost" id="showans">看答案</button>';
+  f += '<button class="btn" id="saveq">＋ 加入题库</button>';
+  document.getElementById('footbar').innerHTML = f;
+
   paintPicked();
   if(shown[cur]){ var b = document.getElementById('ansbox'); b.innerHTML = answerHTML(q); b.classList.add('on'); }
   document.getElementById('prev').onclick = function(){ go(cur - 1); };
