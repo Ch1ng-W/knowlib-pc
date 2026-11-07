@@ -4307,65 +4307,20 @@ class AboutPage(QWidget):
             self._on_check(self.status)
 
 
-class WindowPicker(QDialog):
-    """选一个窗口当搜题来源（PrintWindow，被遮住也能抓）。"""
+class WinCombo(QComboBox):
+    """下拉选窗口；展开前自动刷新列表。"""
 
-    def __init__(self, parent, wins=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("按窗口搜题")
-        self.setMinimumSize(540, 470)
-        self.chosen = None
-        v = QVBoxLayout(self)
-        v.setContentsMargins(16, 14, 16, 14)
-        v.setSpacing(10)
-        tip = QLabel("选一个窗口。之后点「开始」就只盯这个窗口截图，窗口被盖住也能抓到。")
-        tip.setObjectName("sub")
-        tip.setWordWrap(True)
-        v.addWidget(tip)
-        self.list = QListWidget()
-        v.addWidget(self.list, 1)
-        row = QHBoxLayout()
-        self.btn_refresh = QPushButton("刷新列表")
-        self.btn_refresh.clicked.connect(self.reload)
-        row.addWidget(self.btn_refresh)
-        row.addStretch(1)
-        b1 = QPushButton("取消")
-        b2 = QPushButton("用这个窗口")
-        b2.setObjectName("primary")
-        b1.clicked.connect(self.reject)
-        b2.clicked.connect(self.accept_sel)
-        row.addWidget(b1)
-        row.addWidget(b2)
-        v.addLayout(row)
-        self.list.itemDoubleClicked.connect(lambda _i: self.accept_sel())
-        self._wins = list(wins or [])
-        self.reload()
+        self.refresh_cb = None
 
-    def reload(self):
+    def showPopup(self):
         try:
-            self._wins = remote_server.list_windows()
+            if self.refresh_cb:
+                self.refresh_cb()
         except Exception:
             pass
-        self.list.clear()
-        for w in self._wins:
-            it = QListWidgetItem("%s    ·  %d×%d%s" % (
-                w.get("title") or "(无标题)", w.get("w") or 0, w.get("h") or 0,
-                "  （最小化）" if w.get("min") else ""))
-            it.setData(Qt.UserRole, w)
-            self.list.addItem(it)
-        if self.list.count():
-            self.list.setCurrentRow(0)
-
-    def accept_sel(self):
-        it = self.list.currentItem()
-        if it is None:
-            return
-        w = it.data(Qt.UserRole) or {}
-        if w.get("min"):
-            QMessageBox.information(self, "窗口已最小化", "这个窗口最小化了，先还原再选。")
-            return
-        self.chosen = w
-        self.accept()
+        super().showPopup()
 
 
 class MainWindow(QWidget):
@@ -4572,9 +4527,13 @@ class MainWindow(QWidget):
         row1.setSpacing(10)
         self.btn_region = QPushButton("框选区域")
         self.btn_region.clicked.connect(self.select_region)
-        self.btn_window = QPushButton("按窗口搜题")
-        self.btn_window.setCursor(Qt.PointingHandCursor)
-        self.btn_window.clicked.connect(self.pick_window)
+        self.win_combo = WinCombo()
+        self.win_combo.setMinimumWidth(190)
+        self.win_combo.setMaxVisibleItems(14)
+        self.win_combo.setToolTip("按窗口搜题：选一个窗口，抓取时窗口被盖住也能拍到")
+        self.win_combo.refresh_cb = self.reload_windows
+        self.win_combo.activated.connect(self.on_window_pick)
+        self._fill_windows()
         self.btn_start = QPushButton("开始")
         self.btn_start.setObjectName("primary")
         self.btn_start.setCursor(Qt.PointingHandCursor)
@@ -4582,7 +4541,7 @@ class MainWindow(QWidget):
         self.btn_shot = QPushButton("立即识别")
         self.btn_shot.clicked.connect(self.shot_once)
         row1.addWidget(self.btn_region)
-        row1.addWidget(self.btn_window)
+        row1.addWidget(self.win_combo)
         row1.addWidget(self.btn_start)
         row1.addWidget(self.btn_shot)
         row1.addStretch(1)
@@ -5169,30 +5128,56 @@ class MainWindow(QWidget):
         self.cfg.pop("win_hwnd", None)
         self.cfg.pop("win_title", None)
         config_store.save(self.cfg)
+        try:
+            self.win_combo.setCurrentIndex(0)
+        except Exception:
+            pass
         self.update_region_label()
         self.show()
         self.add_log(f"已框选：{r['width']}×{r['height']} @ ({r['left']},{r['top']})")
         self.set_state("区域已设置", COLOR_OK)
 
-    def pick_window(self):
+    def _fill_windows(self):
+        """填充窗口下拉（保持当前选中项）。"""
         try:
             wins = remote_server.list_windows()
-        except Exception as e:
-            self.add_log("枚举窗口失败：%s" % e)
+        except Exception:
+            wins = []
+        cur = self.cfg.get("win_hwnd") if self.cfg.get("src") == "window" else None
+        cb = self.win_combo
+        cb.blockSignals(True)
+        cb.clear()
+        cb.addItem("按窗口搜题…", None)
+        pick = 0
+        for i, w in enumerate(wins, start=1):
+            label = "%s  ·  %d×%d" % ((w.get("title") or "(无标题)")[:26],
+                                       w.get("w") or 0, w.get("h") or 0)
+            if w.get("min"):
+                label += "（最小化）"
+            cb.addItem(label, w)
+            if cur and int(w["id"]) == int(cur):
+                pick = i
+        cb.setCurrentIndex(pick)
+        cb.blockSignals(False)
+
+    def reload_windows(self):
+        self._fill_windows()
+
+    def on_window_pick(self, idx):
+        w = self.win_combo.itemData(idx)
+        if not w:
             return
-        if not wins:
-            self.add_log("没找到可选窗口（都被过滤或都最小化了）")
+        if w.get("min"):
+            QMessageBox.information(self, "窗口已最小化", "这个窗口最小化了，先还原再选。")
+            self._fill_windows()
             return
-        dlg = WindowPicker(self, wins)
-        if dlg.exec_() != QDialog.Accepted or not dlg.chosen:
-            return
-        w = dlg.chosen
         self.cfg["src"] = "window"
         self.cfg["win_hwnd"] = int(w["id"])
         self.cfg["win_title"] = w.get("title") or ""
         config_store.save(self.cfg)
         self.update_region_label()
-        self.add_log("已选窗口：%s（%d×%d）" % (self.cfg["win_title"], w.get("w") or 0, w.get("h") or 0))
+        self.add_log("已选窗口：%s（%d×%d）" % (self.cfg["win_title"],
+                                            w.get("w") or 0, w.get("h") or 0))
         self.set_state("已选窗口，点「开始」", COLOR_OK)
 
     # -------- 运行
