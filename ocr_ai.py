@@ -21,6 +21,15 @@ SYSTEM_PROMPT = (
 class OcrEngine:
     def __init__(self):
         self.ocr = RapidOCR()
+        self.last_info = {}
+        # 检测放宽一点：屏幕截图里细笔画 / 浅色字 / 贴边的选项容易被漏掉；
+        # 识别结果的置信度在 _read() 里自己再筛一遍。
+        try:
+            self.ocr.text_score = 0.45
+            self.ocr.text_det.postprocess_op.box_thresh = 0.3
+            self.ocr.text_det.postprocess_op.unclip_ratio = 1.8
+        except Exception:
+            pass
         # 预热，避免第一次卡 6 秒
         warm = np.full((60, 200, 3), 255, dtype=np.uint8)
         try:
@@ -28,37 +37,122 @@ class OcrEngine:
         except Exception:
             pass
 
-    def recognize(self, pil_image):
-        import numpy as np
-        img = pil_image.convert("RGB")
-        # 小图先放大再识别（选项/公式字号小时效果明显）
+    # ---------------- 预处理
+    @staticmethod
+    def _resize(img):
+        """小图放大再识别（选项/公式字号小时效果明显）。"""
+        from PIL import Image
         try:
             w, h = img.size
             m = max(w, h)
             if m < 700:
-                img = img.resize((int(w * 2.2), int(h * 2.2)))
+                k = 2.2
             elif m < 1100:
-                img = img.resize((int(w * 1.7), int(h * 1.7)))
+                k = 1.7
+            else:
+                return img
+            return img.resize((max(1, int(w * k)), max(1, int(h * k))),
+                              Image.LANCZOS)
         except Exception:
-            pass
-        arr = np.array(img)
-        t0 = time.time()
+            return img
+
+    @staticmethod
+    def _mean_lum(img):
+        try:
+            g = img.convert("L").resize((32, 32))
+            d = list(g.getdata())
+            return sum(d) / max(1, len(d))
+        except Exception:
+            return 255
+
+    @staticmethod
+    def _gray_variant(base):
+        from PIL import ImageOps
+        g = ImageOps.autocontrast(ImageOps.grayscale(base), cutoff=1).convert("RGB")
+        return ImageOps.expand(g, border=10, fill=(255, 255, 255))
+
+    @staticmethod
+    def _invert_variant(base):
+        from PIL import ImageOps
+        g = ImageOps.autocontrast(ImageOps.grayscale(base), cutoff=1).convert("RGB")
+        return ImageOps.expand(ImageOps.invert(g), border=10, fill=(255, 255, 255))
+
+    def _variants(self, img):
+        """深色底（深色模式截图）先反色，浅色底先原图；后面再补一版灰度增强。"""
+        base = self._resize(img)
+        try:
+            dark = self._mean_lum(base) < 120
+        except Exception:
+            dark = False
+        try:
+            if dark:
+                yield "invert", self._invert_variant(base)
+                yield "orig", base
+            else:
+                yield "orig", base
+            yield "gray", self._gray_variant(base)
+        except Exception:
+            return
+
+    def _read(self, arr):
+        """跑一次 OCR，返回 (文本, 平均置信度, 行数)。"""
         result, _ = self.ocr(arr)
-        cost = time.time() - t0
         if not result:
-            return "", 0.0, cost
-        texts, confs = [], []
+            return "", 0.0, 0
+        texts, confs, seen = [], [], None
         for item in result:
-            if isinstance(item, (list, tuple)) and len(item) >= 3:
-                try:
-                    score = float(item[2])
-                except Exception:
-                    continue
-                if score > 0.25:
-                    texts.append(str(item[1]))
-                    confs.append(score)
+            if not isinstance(item, (list, tuple)) or len(item) < 3:
+                continue
+            try:
+                score = float(item[2])
+            except Exception:
+                continue
+            if score < 0.4:
+                continue
+            t = str(item[1]).strip()
+            if not t:
+                continue
+            if t == seen:
+                continue
+            seen = t
+            texts.append(t)
+            confs.append(score)
         text = "\n".join(texts).strip()
         avg = sum(confs) / len(confs) if confs else 0.0
+        return text, avg, len(texts)
+
+    def recognize(self, pil_image):
+        img = pil_image.convert("RGB")
+        t0 = time.time()
+        best = None
+        tried = []
+        attempts = 0
+        for name, im in self._variants(img):
+            attempts += 1
+            try:
+                text, avg, n = self._read(np.array(im))
+            except Exception as e:
+                tried.append([name, 0, 0.0, type(e).__name__])
+                if attempts >= 2:
+                    break
+                continue
+            # 打分：字多优先，置信度做加权（避免"认出一堆垃圾"赢过少而准的结果）
+            quality = len(text) * (0.5 + avg)
+            tried.append([name, len(text), round(avg, 3)])
+            if best is None or quality > best[0]:
+                best = (quality, text, avg, name)
+            # 够好 / 或已经试过两版 → 收工，别拖慢每一帧
+            if (len(text) >= 12 and avg >= 0.80) or attempts >= 2:
+                break
+
+        cost = time.time() - t0
+        if not best:
+            self.last_info = {"passes": tried, "picked": ""}
+            return "", 0.0, cost
+        _q, text, avg, picked = best
+        self.last_info = {"passes": tried, "picked": picked,
+                          "chars": len(text), "conf": round(avg, 3),
+                          "cost": round(cost, 2)}
         return text, avg, cost
 
 

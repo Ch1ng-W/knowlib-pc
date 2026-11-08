@@ -1,4 +1,4 @@
-﻿"""配置存取：数据统一放 %APPDATA%\\Knowlib（升级/卸载都不丢），便携模式可放 exe 同目录。
+"""配置存取：数据统一放 %APPDATA%\\Knowlib（升级/卸载都不丢），便携模式可放 exe 同目录。
 
 迁移规则（首次运行新版本时自动执行，只复制不删除）：
   exe 同目录 / %APPDATA%\\XiaoTuanSouTi  →  %APPDATA%\\Knowlib
@@ -12,7 +12,7 @@ import sys
 APP_NAME = "XiaoTuanSouTi"      # 旧目录名，仅用于迁移
 BRAND = "Knowlib"               # 新数据目录名
 REG_NAME = "Knowlib"            # 开机自启的注册表项名
-APP_VERSION = "1.7.6"
+APP_VERSION = "1.7.7"
 
 DATA_FILES = ("config.json", "bank.db", "history.jsonl")
 

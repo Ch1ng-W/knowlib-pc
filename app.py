@@ -490,11 +490,31 @@ class AnswerOverlay(QWidget):
         self.part_label.setStyleSheet("color:#7f8896;font-size:11px;margin-top:6px;")
         inner.addWidget(self.part_label)
 
-        self.body = QTextBrowser()
-        self.body.setStyleSheet("background:transparent;border:none;")
-        self.body.setMinimumHeight(90)
-        self.body.setMaximumHeight(380)
+        # 解析区：装了 WebEngine 就用本地 KaTeX 渲染（分式/根号不再画成 PNG）
+        self._use_web = bool(web_view and getattr(web_view, "math_available", None)
+                             and web_view.math_available())
+        self.body = None
+        if self._use_web:
+            try:
+                self.body = web_view.make_math_view(self, transparent=True)
+            except Exception:
+                self._use_web = False
+        if self.body is None:
+            self.body = QTextBrowser()
+            self.body.setStyleSheet("background:transparent;border:none;")
+            self.body.setMinimumHeight(90)
+            self.body.setMaximumHeight(380)
+        else:
+            # 网页视图不会自己长高：先给个最小高度，渲染完按内容调
+            self.body.setMinimumHeight(70)
+            self.body.setMaximumHeight(380)
         inner.addWidget(self.body)
+
+        # 流式输出时合并刷新（每 120ms 最多重渲染一次，避免卡顿）
+        self._rt = QTimer(self)
+        self._rt.setSingleShot(True)
+        self._rt.setInterval(120)
+        self._rt.timeout.connect(self._render_now)
 
         self.foot = QLabel("")
         self.foot.setStyleSheet("color:#7f8896;font-size:11px;")
@@ -589,32 +609,62 @@ class AnswerOverlay(QWidget):
             "padding:10px 14px;border-radius:12px;"
             "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             "stop:0 rgba(126,231,135,26),stop:1 rgba(126,231,135,10));")
-        self.body.setStyleSheet(
-            f"background:transparent;border:none;color:{self._tcolor};"
-            f"font-size:{self._font}px;")
+        if not self._use_web:
+            self.body.setStyleSheet(
+                f"background:transparent;border:none;color:{self._tcolor};"
+                f"font-size:{self._font}px;")
         if self._height >= 180:
-            self.body.setMaximumHeight(max(90, self._height - 170))
+            hh = max(90, self._height - 170)
+            self.body.setMaximumHeight(hh)
+            if self._use_web:
+                self.body.setMinimumHeight(hh)
             self.setFixedHeight(self._height)
         else:
             self.body.setMaximumHeight(380)
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
             self.adjustSize()
-        self._render()
+        self._render_now()
 
     # ---------------- 内容
     @safe_slot
     def set_text(self, text):
         self._full = text or ""
-        self._render()
+        self._rt.stop()
+        self._render_now()
 
     @safe_slot
     def append_text(self, delta):
         self._full = getattr(self, "_full", "") + (delta or "")
-        self._render()
+        if not self._rt.isActive():
+            self._rt.start()
 
     @safe_slot
     def _render(self):
+        """外部还能叫 _render()：走节流那条路。"""
+        if not self._rt.isActive():
+            self._rt.start()
+
+    def _fit_body(self):
+        """网页视图按内容高度贴合（固定高度模式下不调）。"""
+        if not self._use_web:
+            return
+        if int(getattr(self, "_height", 0) or 0) >= 180:
+            return
+
+        def got(h):
+            try:
+                nh = max(64, min(380, int(h or 0) + 2))
+                self.body.setMinimumHeight(nh)
+                self.body.setMaximumHeight(nh)
+                self.adjustSize()
+            except Exception:
+                pass
+
+        web_view.math_height(self.body, got)
+
+    @safe_slot
+    def _render_now(self):
         import re as _re
         import html as _html
         full = getattr(self, "_full", "") or ""
@@ -645,8 +695,47 @@ class AnswerOverlay(QWidget):
             big = ans
 
         big = (big or "").replace("**", "").replace("__", "").strip()
+        # 记下「实际显示」的内容，复制时保持一致
+        self._display_ans = big or ""
+        self._display_tail = tail or ""
+
+        if self._use_web:
+            # 答案里有公式（$...$ / \\frac）才交给网页渲染；
+            # 普通文字仍用 QLabel 钉在顶部，滚动解析时答案不会跑掉。
+            has_math = ("$" in big) or ("\\" in big)
+            blocks = []
+            if has_math:
+                blocks.append({"k": "big", "v": big or "…",
+                               "color": self._acolor, "size": self._afont})
+            if opts:
+                items = [{"k": k, "text": txt,
+                          "on": bool(letter) and k.upper() == letter}
+                         for k, txt in opts]
+                blocks.append({"k": "opts", "items": items,
+                               "accent": self._acolor, "color": self._tcolor,
+                               "size": self._font})
+            if tail:
+                blocks.append({"k": "lab", "v": "解析"})
+                blocks.append({"k": "md", "v": tail})
+            web_view.math_render(self.body, {
+                "blocks": blocks,
+                "fg": self._tcolor, "muted": "#7f8896",
+                "accent": self._tcolor, "ok": self._acolor,
+                "line": "rgba(255,255,255,0.12)",
+                "size": self._font, "bg": "transparent", "padding": 0,
+            })
+            if has_math:
+                self.answer.setVisible(False)
+            else:
+                self.answer.setText(big or "…")
+                self.answer.show()
+            self.part_label.setVisible(False)
+            self._fit_body()
+            return
+
         self.answer.setText(big or "…")
         self.answer.show()
+        self.part_label.setVisible(bool(tail))
 
         parts = []
         if opts:
@@ -665,15 +754,14 @@ class AnswerOverlay(QWidget):
             parts.append(md_render.to_html(tail, color=self._tcolor,
                                            font_size=self._font))
         self.body.setHtml("".join(parts) if parts else "")
-        self.part_label.setVisible(bool(tail))
         self.body.verticalScrollBar().setValue(0)
-        # 记下「实际显示」的内容，复制时保持一致
-        self._display_ans = big or ""
-        self._display_tail = tail or ""
 
     def copy_text(self):
         ans = (getattr(self, "_display_ans", "") or self.answer.text() or "").strip()
-        tail = (getattr(self, "_display_tail", "") or self.body.toPlainText() or "").strip()
+        plain = ""
+        if not self._use_web:
+            plain = self.body.toPlainText() or ""
+        tail = (getattr(self, "_display_tail", "") or plain or "").strip()
         if ans or tail:
             text = ("答案：" + ans if ans else "")
             if tail:
@@ -1910,7 +1998,8 @@ class HistoryPage(QWidget):
         self._on_back = on_back
         self.setObjectName("historyPage")
         self.setStyleSheet("")
-        self._c = theme_colors(getattr(parent, "theme", LIGHT))
+        self._t = getattr(parent, "theme", LIGHT)
+        self._c = theme_colors(self._t)
 
         self.items = []
         self.sel = set()          # 已勾选的 key
@@ -1953,8 +2042,18 @@ class HistoryPage(QWidget):
 
         right = QVBoxLayout()
         right.setSpacing(8)
-        self.view = QTextBrowser()
-        self.view.setOpenExternalLinks(True)
+        # 预览区：装了 WebEngine 就用 KaTeX，否则退回 QTextBrowser
+        self._use_web = bool(web_view and getattr(web_view, "math_available", None)
+                             and web_view.math_available())
+        self.view = None
+        if self._use_web:
+            try:
+                self.view = web_view.make_math_view(self, transparent=False)
+            except Exception:
+                self._use_web = False
+        if self.view is None:
+            self.view = QTextBrowser()
+            self.view.setOpenExternalLinks(True)
         right.addWidget(self.view, 1)
 
         # 工具栏放进横向滚动区：窗口再窄也不会把按钮文字压扁
@@ -2067,8 +2166,7 @@ class HistoryPage(QWidget):
         if vis:
             self.list.setCurrentRow(min(max(cur, 0), len(vis) - 1))
         else:
-            self.view.setHtml("<div style='color:#7f8896;padding:20px'>"
-                              "没有可显示的记录。取消勾选「只看有效」可以看全部。</div>")
+            self._show_empty()
 
     def _on_item_changed(self, item):
         it = item.data(Qt.UserRole) or {}
@@ -2103,6 +2201,24 @@ class HistoryPage(QWidget):
         a = md_render.clean_text((it.get("a") or "").strip())
         cost = it.get("cost")
         cost_s = f" · {cost}s" if isinstance(cost, (int, float)) else ""
+        if self._use_web:
+            web_view.math_render(self.view, {
+                "blocks": [
+                    {"k": "meta", "v": (it.get("t", "") or "") + cost_s},
+                    {"k": "lab", "v": "题目", "color": self._c["accent"]},
+                    {"k": "md", "v": q},
+                    {"k": "lab", "v": "答案与解析", "color": self._c["accent"]},
+                    {"k": "md", "v": a},
+                ],
+                "fg": self._c["text"], "muted": self._c["muted"],
+                "accent": self._c["accent"], "ok": self._c["answer"],
+                "line": self._t.get("border", "rgba(0,0,0,0.12)"),
+                "size": 14,
+                "bg": self._t.get("input", "#FFFFFF"),
+                "padding": 2,
+            })
+            return
+
         html = (
             f"<div style='color:{self._c['muted']};font-size:12px'>"
             f"{self._esc(it.get('t', ''))}{cost_s}</div>"
@@ -2114,6 +2230,20 @@ class HistoryPage(QWidget):
         self.view.setHtml(html)
         sb = self.view.verticalScrollBar()
         sb.setValue(0)
+
+    def _show_empty(self):
+        msg = "没有可显示的记录。取消勾选「只看有效」可以看全部。"
+        if self._use_web:
+            web_view.math_render(self.view, {
+                "blocks": [{"k": "meta", "v": msg}],
+                "fg": self._c["muted"], "muted": self._c["muted"],
+                "accent": self._c["accent"], "ok": self._c["answer"],
+                "size": 13,
+                "bg": self._t.get("input", "#FFFFFF"),
+                "padding": 20,
+            })
+            return
+        self.view.setHtml("<div style='color:#7f8896;padding:20px'>" + msg + "</div>")
 
     @staticmethod
     def _esc(s):
@@ -3912,6 +4042,9 @@ class ScanWorker(QObject):
                 self.state.emit("识别中…", COLOR_ACCENT)
                 eng = self.ensure_ocr()
                 text, conf, ocr_cost = eng.recognize(img)
+                info = getattr(eng, "last_info", {}) or {}
+                trace("OCR passes=%s picked=%s chars=%d conf=%.2f" % (
+                    info.get("passes"), info.get("picked"), len(text or ""), conf or 0.0))
                 if not text or len(text) < 6:
                     self.detail.emit(f"OCR {ocr_cost:.2f}s · 没读到文字，跳过")
                     self.state.emit("没读到文字（区域里没内容？）", COLOR_WARN)
@@ -5348,7 +5481,7 @@ class MainWindow(QWidget):
 
     @safe_slot
     def _on_ocr(self, text):
-        trace("ocr len=%d" % len(text or ""))
+        trace("ocr len=%d text=%r" % (len(text or ""), (text or "")[:600]))
         if text != self.last_question:
             self.overlay.set_text("")      # 新题：清掉上一题答案，避免越堆越长
             self.last_question = text

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Knowlib 公式</title>
+<link rel="stylesheet" href="katex/katex.inline.css">
+<script src="katex/katex.min.js"></script>
+<style>
+  :root{
+    --fg:#e6e9ef; --fg2:#8b949e; --accent:#8fb6ff; --ok:#7ee787;
+    --line:#ffffff1f; --code:#ffffff14; --size:14px;
+  }
+  html,body{margin:0;padding:0;height:100%;background:transparent;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei UI","Microsoft YaHei","Segoe UI",sans-serif;
+    color:var(--fg); font-size:var(--size); line-height:1.7;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  #wrap{height:100%;width:100%;overflow-y:auto;overflow-x:hidden;padding:0;}
+  #wrap::-webkit-scrollbar{width:8px;height:8px}
+  #wrap::-webkit-scrollbar-thumb{background:#ffffff26;border-radius:4px}
+  #wrap::-webkit-scrollbar-track{background:transparent}
+  .md p{margin:4px 0}
+  .md .h1,.md .h2,.md .h3,.md .h4,.md .h5,.md .h6{
+    color:var(--accent);font-weight:600;margin:12px 0 5px;
+  }
+  .md .h1{font-size:1.45em}.md .h2{font-size:1.28em}.md .h3{font-size:1.15em}
+  .md .h4{font-size:1.06em}.md .h5{font-size:1em}.md .h6{font-size:.95em}
+  .md ul,.md ol{margin:4px 0 4px 22px;padding:0}
+  .md li{margin:2px 0}
+  .md blockquote{margin:6px 0;padding:2px 10px;border-left:3px solid var(--line);color:var(--fg2)}
+  .md hr{border:none;border-top:1px solid var(--line);margin:12px 0}
+  .md code{background:var(--code);border-radius:4px;padding:1px 5px;
+    font-family:Consolas,"Cascadia Mono",monospace;font-size:.92em}
+  .md pre{background:var(--code);border-radius:8px;padding:8px 10px;
+    font-family:Consolas,"Cascadia Mono",monospace;font-size:.9em;
+    white-space:pre-wrap;word-break:break-word;margin:6px 0}
+  .md img{max-width:100%;border-radius:8px;margin:6px 0}
+  .md table{border-collapse:collapse;margin:8px 0}
+  .md td{border:1px solid var(--line);padding:5px 8px}
+  .big{
+    font-weight:800;line-height:1.45;padding:10px 14px;border-radius:12px;
+    word-break:break-word;margin:0 0 10px;
+    background:linear-gradient(90deg,rgba(126,231,135,.10),rgba(126,231,135,.04));
+  }
+  .lab{color:var(--fg2);font-size:11px;margin:8px 0 4px;font-weight:600}
+  .meta{color:var(--fg2);font-size:12px}
+  .opt{padding:2px 0;word-break:break-word}
+  .opt .k{font-weight:600}
+  .opt .mark{font-weight:700}
+  .katex{font-size:1.02em}
+  .katex-display{margin:.45em 0;overflow-x:auto;overflow-y:hidden}
+</style>
+</head>
+<body>
+<div id="wrap"><div id="doc"></div></div>
+<script>
+(function(){
+  var wrap = document.getElementById('wrap');
+  var doc = document.getElementById('doc');
+  var P = '\u0001';
+  var RE_PH = /\u0001M(\d+)\u0001/g;
+
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderMath(tex, display){
+    try{
+      return katex.renderToString(tex, {
+        throwOnError:false, displayMode:!!display, output:'htmlAndMathml'
+      });
+    }catch(e){
+      return '<span class="texerr">' + esc(tex) + '</span>';
+    }
+  }
+
+  function imgSrc(p){
+    p = String(p || '').trim().replace(/^["']|["']$/g,'');
+    if(/^(file:\/\/|https?:\/\/|data:)/i.test(p)) return p;
+    return 'file:///' + p.replace(/\\/g,'/');
+  }
+
+  // 行内：粗体 / 斜体 / 代码 / 图片 / 链接 / 公式占位
+  function inline(t){
+    var h = esc(t);
+    h = h.replace(/`([^`]+)`/g, function(_,a){ return '<code>'+a+'</code>'; });
+    h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    h = h.replace(/__([^_]+)__/g, '<b>$1</b>');
+    h = h.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<i>$2</i>');
+    h = h.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(_,alt,src){
+      return '<img src="'+imgSrc(src)+'" alt="'+alt+'">';
+    });
+    h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_,txt,url){
+      return '<a href="'+url+'" target="_blank">'+txt+'</a>';
+    });
+    return h;
+  }
+
+  function stashMath(src, arr){
+    var re = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$([^$\n]+?)\$/g;
+    return String(src == null ? '' : src).replace(re, function(m,p1,p2,p3,p4){
+      var tex = (p1 != null ? p1 : (p2 != null ? p2 : (p3 != null ? p3 : p4)));
+      var display = (p1 != null || p2 != null);
+      // “价格 $5 元” 这种不是公式，原样留着（中文夹在 $ 里）
+      if(!display && /[\u4e00-\u9fff]/.test(tex)) return m;
+      arr.push({html: renderMath(tex.trim(), display), display: display});
+      return P + 'M' + (arr.length - 1) + P;
+    });
+  }
+
+  function expandMath(html, arr){
+    return String(html).replace(RE_PH, function(_,i){
+      var m = arr[+i];
+      return m ? m.html : '';
+    });
+  }
+
+  // 单行（选项/标题/列表项）用的：带公式的行内渲染
+  function inlineMd(t, arr){
+    arr = arr || [];
+    var s = stashMath(t, arr);
+    return expandMath(inline(s), arr);
+  }
+
+  function md(src){
+    var math = [];
+    var s = stashMath(src, math);
+    var lines = s.split(/\r?\n/);
+    var out = [], para = [], list = null;
+
+    function flushPara(){
+      if(para.length){ out.push('<p>' + para.join('<br>') + '</p>'); para = []; }
+    }
+    function closeList(){
+      if(list){ out.push('</' + list + '>'); list = null; }
+    }
+
+    for(var i = 0; i < lines.length; i++){
+      var raw = lines[i], t = raw.trim();
+
+      if(!t){ flushPara(); closeList(); continue; }
+
+      // 独占一行的块级公式
+      var mo = t.match(/^\u0001M(\d+)\u0001$/);
+      if(mo && math[+mo[1]] && math[+mo[1]].display){
+        flushPara(); closeList(); out.push(math[+mo[1]].html); continue;
+      }
+      if(mo && math[+mo[1]]){
+        flushPara(); closeList(); out.push('<p>' + math[+mo[1]].html + '</p>'); continue;
+      }
+
+      if(t.indexOf('```') === 0){
+        flushPara(); closeList();
+        var buf = [];
+        i++;
+        while(i < lines.length && lines[i].trim().indexOf('```') !== 0){
+          buf.push(esc(lines[i])); i++;
+        }
+        out.push('<pre>' + buf.join('\n') + '</pre>');
+        continue;
+      }
+
+      var mh = t.match(/^(#{1,6})\s+(.*)$/);
+      if(mh){
+        flushPara(); closeList();
+        out.push('<div class="h' + mh[1].length + '">' + inlineMd(mh[2], math) + '</div>');
+        continue;
+      }
+
+      if(/^([-*_])\1{2,}$/.test(t)){ flushPara(); closeList(); out.push('<hr>'); continue; }
+
+      var mq = t.match(/^>\s?(.*)$/);
+      if(mq){ flushPara(); closeList(); out.push('<blockquote>' + inlineMd(mq[1], math) + '</blockquote>'); continue; }
+
+      var m2 = t.match(/^(\d+)[.、)]\s+(.*)$/);
+      var mu = t.match(/^[-*+]\s+(.*)$/);
+      if(m2 || mu){
+        flushPara();
+        var want = m2 ? 'ol' : 'ul';
+        if(list !== want){ closeList(); out.push('<' + want + '>'); list = want; }
+        out.push('<li>' + inlineMd(m2 ? m2[2] : mu[1], math) + '</li>');
+        continue;
+      }
+
+      closeList();
+      para.push(inlineMd(t, math));
+    }
+    flushPara(); closeList();
+
+    return expandMath('<div class="md">' + out.join('\n') + '</div>', math);
+  }
+
+  function block(b){
+    var k = b.k || 'md', v = b.v == null ? '' : b.v;
+    if(k === 'md') return md(v);
+    if(k === 'big'){
+      var st = 'color:' + (b.color || 'var(--ok)') + ';font-size:' + (b.size || 24) + 'px;';
+      return '<div class="big" style="' + st + '">' + md(v) + '</div>';
+    }
+    if(k === 'lab') return '<div class="lab" style="color:' + (b.color || 'var(--fg2)') + '">' + esc(v) + '</div>';
+    if(k === 'meta') return '<div class="meta">' + esc(v) + '</div>';
+    if(k === 'html') return v;
+    if(k === 'opts'){
+      var rows = [];
+      var items = b.items || [];
+      for(var i = 0; i < items.length; i++){
+        var it = items[i] || {};
+        var on = !!it.on;
+        var st2 = 'color:' + (on ? (b.accent || 'var(--ok)') : (b.color || 'var(--fg)')) + ';'
+                + 'font-weight:' + (on ? 700 : 400) + ';'
+                + 'font-size:' + (b.size || 14) + 'px;';
+        rows.push('<div class="opt" style="' + st2 + '">'
+          + '<span class="k">' + esc(it.k || '') + '．</span>'
+          + '<span class="tx">' + inlineMd(String(it.text || '')) + '</span>'
+          + (on ? '<span class="mark"> ✓</span>' : '')
+          + '</div>');
+      }
+      return '<div style="margin:0 0 10px">' + rows.join('') + '</div>';
+    }
+    if(k === 'spacer') return '<div style="height:' + (b.size || 6) + 'px"></div>';
+    return '';
+  }
+
+  window.klRender = function(payload){
+    payload = payload || {};
+    var root = document.documentElement;
+    if(payload.fg) root.style.setProperty('--fg', payload.fg);
+    if(payload.muted) root.style.setProperty('--fg2', payload.muted);
+    if(payload.accent) root.style.setProperty('--accent', payload.accent);
+    if(payload.ok) root.style.setProperty('--ok', payload.ok);
+    if(payload.line) root.style.setProperty('--line', payload.line);
+    if(payload.size) root.style.setProperty('--size', payload.size + 'px');
+    var bg = payload.bg || 'transparent';
+    document.body.style.background = bg;
+    wrap.style.padding = (payload.padding == null ? 0 : payload.padding) + 'px';
+
+    var blocks = payload.blocks || [];
+    var html = [];
+    for(var i = 0; i < blocks.length; i++) html.push(block(blocks[i]));
+    doc.innerHTML = html.join('');
+    if(payload.top !== false) wrap.scrollTop = 0;
+    return doc.getBoundingClientRect().height;
+  };
+
+  window.klHeight = function(){
+    return Math.ceil(doc.getBoundingClientRect().height);
+  };
+
+  window.klClear = function(){
+    doc.innerHTML = '';
+    return 1;
+  };
+})();
+</script>
+</body>
+</html>

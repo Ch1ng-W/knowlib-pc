@@ -38,7 +38,7 @@ WEB_DIR = _find_web()
 
 try:
     from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineSettings, QWebEngineScript
-    from PyQt5.QtCore import QUrl
+    from PyQt5.QtCore import QUrl, Qt, QTimer
     HAVE_WEBENGINE = True
 except Exception:            # 没装 / 装坏了
     HAVE_WEBENGINE = False
@@ -141,3 +141,105 @@ _SAVE_JS = r"""
 def install_save_button(view):
     """每题卡片上加一个「加入题库」按钮，点完通过 #klsave:N 通知 Python。"""
     view.page().runJavaScript(_SAVE_JS)
+
+
+# ================================================================ 公式视图
+# 答案窗 / 历史预览共用：把 Markdown + LaTeX 交给本地 KaTeX 渲染，
+# 比 QTextBrowser（分式画成 PNG）整齐得多。
+
+def _math_path():
+    return os.path.join(WEB_DIR, "math.html")
+
+
+def math_available():
+    return HAVE_WEBENGINE and os.path.exists(_math_path())
+
+
+def make_math_view(parent=None, transparent=False, menu=False):
+    """建一个跑 math.html 的 QWebEngineView。
+
+    transparent=True 用于答案窗（无边框 + 半透明卡片），
+    历史预览传 False，用页面自己给的底色。
+    """
+    if not HAVE_WEBENGINE:
+        raise RuntimeError("PyQtWebEngine not available")
+
+    view = QWebEngineView(parent)
+    st = view.settings()
+    st.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+    st.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+    st.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, True)
+    st.setAttribute(QWebEngineSettings.JavascriptCanOpenWindows, False)
+    st.setAttribute(QWebEngineSettings.ShowScrollBars, True)
+
+    if not menu:
+        view.setContextMenuPolicy(Qt.NoContextMenu)
+    if transparent:
+        try:
+            view.setAttribute(Qt.WA_TranslucentBackground, True)
+            view.setStyleSheet("background:transparent;border:none;")
+            view.page().setBackgroundColor(Qt.transparent)
+        except Exception:
+            pass
+
+    view._kl_ready = False
+    view._kl_payload = None
+    view._kl_error = ""
+    view.loadFinished.connect(lambda ok: _math_loaded(view, ok))
+    view.load(QUrl.fromLocalFile(_math_path()))
+    return view
+
+
+def _math_loaded(view, ok):
+    view._kl_ready = bool(ok)
+    if not ok:
+        view._kl_error = "math.html 加载失败"
+        return
+    payload = getattr(view, "_kl_payload", None)
+    if payload is not None:
+        _math_push(view, payload)
+
+
+def _math_push(view, payload):
+    try:
+        js = "window.klRender(%s);" % json.dumps(payload, ensure_ascii=False)
+        view.page().runJavaScript(js)
+    except Exception:
+        pass
+
+
+def math_render(view, payload):
+    """渲染一组 block；页面还没加载好就先记住，加载完自动补渲染。"""
+    view._kl_payload = payload
+    if getattr(view, "_kl_ready", False):
+        _math_push(view, payload)
+
+
+def math_clear(view):
+    view._kl_payload = None
+    if getattr(view, "_kl_ready", False):
+        try:
+            view.page().runJavaScript("window.klClear && window.klClear();")
+        except Exception:
+            pass
+
+
+def math_height(view, cb, _tries=0):
+    """读内容实际高度（px），用来让网页视图贴合内容。"""
+    if not getattr(view, "_kl_ready", False):
+        if _tries < 8:
+            QTimer.singleShot(60, lambda: math_height(view, cb, _tries + 1))
+        else:
+            cb(0)
+        return
+
+    def got(v):
+        try:
+            cb(int(v or 0))
+        except Exception:
+            cb(0)
+
+    try:
+        view.page().runJavaScript("window.klHeight ? window.klHeight() : 0", got)
+    except Exception:
+        got(0)
