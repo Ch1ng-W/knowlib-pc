@@ -208,14 +208,24 @@ def is_valid(q_text, answer):
     return True
 
 
-def norm_key(q_text):
-    """去重用的归一键：先洗掉界面噪声，再按题库规则 normalize。"""
+def _norm_key_raw(q_text):
     try:
         from question_bank import normalize
     except Exception:
         def normalize(t):
             return "".join((t or "").split())
     return normalize(clean_stem(q_text))
+
+
+try:
+    from functools import lru_cache as _lru_cache
+
+    # clean_stem 的正则比较费时（每题 ~3ms），历史记录一多，去重会明显卡。
+    # 按题干文本缓存归一结果：同题重复出现时直接命中；新增一条也只需算新的那条。
+    norm_key = _lru_cache(maxsize=6000)(_norm_key_raw)
+except Exception:                       # 理论上不会发生
+    def norm_key(q_text):
+        return _norm_key_raw(q_text)
 
 
 # ---------------------------------------------------------------- Markdown

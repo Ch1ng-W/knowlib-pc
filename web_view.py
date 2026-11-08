@@ -224,6 +224,46 @@ def math_clear(view):
             pass
 
 
+_WARM = {"win": None, "tries": 0}
+
+
+def warm_up():
+    """提前把 WebEngine 渲染进程 + KaTeX 字体跑热。
+
+    第一次切到「历史记录 / 题库」时，QWebEngineView 首次真正绘制要建合成层、
+    加载 KaTeX 字体，会卡一下。这里在屏幕外开个 8x8 的透明小窗先画一次，
+    把进程/字体都预热好，之后切页就不卡了。
+    """
+    if not math_available():
+        return False
+    if _WARM.get("win") is not None:
+        return True
+    try:
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout
+
+        win = QWidget(None, Qt.Tool | Qt.FramelessWindowHint)
+        win.setAttribute(Qt.WA_TranslucentBackground)
+        win.setAttribute(Qt.WA_ShowWithoutActivating)
+        win.setFixedSize(8, 8)
+        win.move(-4000, -4000)          # 屏幕外，看不见
+        lay = QVBoxLayout(win)
+        lay.setContentsMargins(0, 0, 0, 0)
+        view = make_math_view(win, transparent=True)
+        lay.addWidget(view)
+        win.show()                      # 处于“可见”状态，Chromium 才会真正画
+        # 一段带分式/根号/求和的样例，目的是把 KaTeX 字体全部触发一遍
+        math_render(view, {
+            "blocks": [{"k": "md", "v": (
+                "$x=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}$ "
+                "$$\\sum_{i=1}^{n} i^2=\\frac{n(n+1)(2n+1)}{6}$$")}],
+            "size": 12, "bg": "transparent",
+        })
+        _WARM["win"] = win
+        return True
+    except Exception:
+        return False
+
+
 def math_height(view, cb, _tries=0):
     """读内容实际高度（px），用来让网页视图贴合内容。"""
     if not getattr(view, "_kl_ready", False):

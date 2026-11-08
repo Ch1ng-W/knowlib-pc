@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
 import config_store
 import md_render
 import online_quiz
+import paper_export   # 顶层导入：避免第一次打开历史/题库时卡在 import 上
 import question_bank as qbank
 import remote_server
 import updater
@@ -4898,6 +4899,13 @@ class MainWindow(QWidget):
             QTimer.singleShot(3500, self._auto_sync)
             self._sync_timer.start()
 
+        # 预热 WebEngine/KaTeX：第一次切「历史/题库」时不再卡（延迟 1.2s，不影响启动）
+        try:
+            if web_view is not None and hasattr(web_view, "warm_up"):
+                QTimer.singleShot(1200, web_view.warm_up)
+        except Exception:
+            pass
+
     # -------- 页面切换（窗口可自由缩放，记住每个页面的尺寸）
     PAGE_SIZES = {"home": (470, 492), "history": (900, 600),
                   "bank": (900, 620), "settings": (580, 762)}
@@ -4951,10 +4959,11 @@ class MainWindow(QWidget):
                 self._sync_paper_nav(self.page_paper._tab)
             except Exception:
                 pass
+        # 先把页面切过去、让界面先画出来，再刷新内容（避免切页瞬间白卡）
         if name == "history":
-            self.page_history.reload()
+            QTimer.singleShot(0, self.page_history.reload)
         elif name == "bank":
-            self.page_bank.reload()
+            QTimer.singleShot(0, self.page_bank.reload)
     def _resize_to(self, w, h, page=None, animate=True):
         """窗口尺寸/位置过渡（不再锁死尺寸，用户随时可以拖边缩放）。"""
         start = self.geometry()

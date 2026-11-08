@@ -12,7 +12,7 @@ import sys
 APP_NAME = "XiaoTuanSouTi"      # 旧目录名，仅用于迁移
 BRAND = "Knowlib"               # 新数据目录名
 REG_NAME = "Knowlib"            # 开机自启的注册表项名
-APP_VERSION = "1.7.10"
+APP_VERSION = "1.7.11"
 
 DATA_FILES = ("config.json", "bank.db", "history.jsonl")
 
@@ -257,13 +257,40 @@ def write_history(items):
         return False
 
 
-def dedupe_history(items, keep_valid=True, threshold=0.82):
-    """items 按“最新在前”。返回 (保留列表, 被丢掉的数量)。
+_DEDUPE_CACHE = {}
 
-    同题识别多次会因 OCR 噪声（提交成功/输入答案/候选字乱码）变成不同 norm，
-    所以除了精确相同，还要用相似度合并（同一题的截图变体）。
+
+def dedupe_history(items, keep_valid=True, threshold=0.82):
+    """items 按“新在前”排序，返回 (保留列表, 被丢掉的数量)。
+
+    同题识别（同位置、OCR 噪声、提交成功/错误/多选项多字）会形成不同 norm，
+    所以除了精确去重，还要用相似度合并（同一题的截图变体）。
+
+    优化点（2026-11-08）：
+      1. 结果按内容哈希缓存——切页时不再重复算（原来每次都算，一次约 0.5s）；
+      2. paper_export 只在函数顶部 import 一次，不在循环里反复 import。
     """
+    global _DEDUPE_CACHE
+    import hashlib
+
+    import paper_export
+
+    key = None
+    try:
+        h = hashlib.md5()
+        for it in items:
+            h.update(("%s\x1f%s\x1f%s\x1e" % (
+                it.get("t", ""), it.get("q", ""), it.get("a", "")
+            )).encode("utf-8", "ignore"))
+        key = (bool(keep_valid), float(threshold), len(items), h.hexdigest())
+        hit = _DEDUPE_CACHE.get(key)
+        if hit is not None:
+            return list(hit[0]), hit[1]
+    except Exception:
+        key = None
+
     from difflib import SequenceMatcher
+
     kept, dropped = [], 0
     norms = []
     for it in items:
@@ -271,14 +298,12 @@ def dedupe_history(items, keep_valid=True, threshold=0.82):
         a = (it.get("a") or "").strip()
         if keep_valid:
             try:
-                import paper_export
                 if not paper_export.is_valid(q, a):
                     dropped += 1
                     continue
             except Exception:
                 pass
         try:
-            import paper_export
             n = paper_export.norm_key(q)
         except Exception:
             n = q
@@ -288,7 +313,7 @@ def dedupe_history(items, keep_valid=True, threshold=0.82):
                 continue
             short, long_ = (n, old) if len(n) <= len(old) else (old, n)
             r1 = SequenceMatcher(None, n, old).ratio()
-            # OCR 截断（只括到一半）也算重复
+            # OCR 截断（只读到一半）也算重复
             r2 = SequenceMatcher(None, short, long_[:len(short) + 2]).ratio()
             if max(r1, r2) >= threshold:
                 dup = True
@@ -298,6 +323,11 @@ def dedupe_history(items, keep_valid=True, threshold=0.82):
             continue
         kept.append(it)
         norms.append(n)
+
+    if key is not None:
+        _DEDUPE_CACHE[key] = (list(kept), dropped)
+        if len(_DEDUPE_CACHE) > 8:            # 只留最近几次，别无限涨
+            _DEDUPE_CACHE.pop(next(iter(_DEDUPE_CACHE)))
     return kept, dropped
 
 
