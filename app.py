@@ -427,6 +427,53 @@ class Stepper(QWidget):
         self.setValue(int(digits) if digits else self._value)
 
 
+# ---------------------------------------------------------------- 选项可信度
+_OPT_UI_NOISE = re.compile(
+    r"(判断题|选择题|填空题|简答题|计算题|答题卡|交卷|报错|导出|全选|查看|编辑|删除|"
+    r"复制|分享|收藏|纠错|加入题库|上一题|下一题|提交|取消|确定|剩余|倒计时|"
+    r"PDF|Markdown|题库|笔记|刷新)"
+)
+
+
+def _opt_norm(s):
+    return re.sub(r"[\s，。、；：:;,。.\-—_()（）\[\]【】\"'“”‘’]", "", (s or "")).lower()
+
+
+def _sane_options(opts, ans=""):
+    """校验 OCR 解析出的选项；不可信就返回 []（宁可不显示，也不显示错的）。"""
+    if not opts:
+        return []
+    try:
+        pairs = [(str(k).strip().upper(), str(t).strip()) for k, t in opts]
+    except Exception:
+        return []
+    if not (2 <= len(pairs) <= 8):
+        return []
+    for i, (k, t) in enumerate(pairs):
+        if k != chr(ord("A") + i):          # 必须是 A、B、C… 连续
+            return []
+        if not t or len(t) > 60:
+            return []
+        if _OPT_UI_NOISE.search(t):         # 界面文字混进来了
+            return []
+
+    # 和模型给的答案对不上 → 说明选项抓错了（典型：OCR 把右侧面板串进来）
+    letter = ""
+    m = re.match(r"^\s*([A-Ha-h])\b", (ans or "").strip())
+    if m:
+        letter = m.group(1).upper()
+    if letter:
+        rest = re.sub(r"^\s*[A-Ha-h]\s*[．.、:：]?\s*", "", (ans or "")).strip()
+        if len(rest) > 1:
+            pick = dict(pairs).get(letter, "")
+            a, b = _opt_norm(rest), _opt_norm(pick)
+            if a and b and a not in b and b not in a:
+                import difflib
+                if difflib.SequenceMatcher(None, a, b).ratio() < 0.5:
+                    return []
+    return pairs
+
+
 class AnswerOverlay(QWidget):
     def __init__(self, host):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -684,13 +731,19 @@ class AnswerOverlay(QWidget):
         if mm:
             letter = mm.group(1).upper()
 
+        # OCR 的选项经常被界面文字污染（判断题/交卷/报错/导出 PDF…），
+        # 不可信时宁可不画选项列表，也不要显示错的。
+        opts = _sane_options(opts, ans)
+
         if opts and letter:
             pick = None
             for k, txt in opts:
                 if k.upper() == letter:
                     pick = txt
                     break
-            big = f"{letter}．{pick}" if pick else letter
+            rest = _re.sub(r"^\s*[A-Ha-h]\s*[．.、:：]?\s*", "", ans or "").strip()
+            # 模型只回了字母 → 用OCR选项补原文；模型自己写了原文 → 以模型为准
+            big = f"{letter}．{pick}" if (pick and len(rest) <= 1) else ans
         else:
             big = ans
 
@@ -4063,6 +4116,16 @@ class ScanWorker(QObject):
                 self.ocr_done.emit(text)
                 self.detail.emit(f"OCR {ocr_cost:.2f}s · {len(text)} 字 · 置信 {conf:.2f}")
 
+                # 交给 AI 前先掎掉界面噪声（交卷/报错/导出 PDF/答题卡…）,
+                # 但别把内容删太多（保留 ≥ 60% 才用清洗版）
+                text_ai = text
+                try:
+                    _clean = md_render.clean_text(text)
+                    if len(_clean) >= max(8, int(len(text) * 0.6)):
+                        text_ai = _clean
+                except Exception:
+                    pass
+
                 # —— 先查本地题库（命中就秒回，不花 token）
                 if self.cfg.get("bank_first", True):
                     hit = qbank.lookup(text)
@@ -4102,7 +4165,7 @@ class ScanWorker(QObject):
                             text, on_delta=lambda d: self.delta.emit(d))
                 else:
                     self.state.emit("请求 AI…", COLOR_ACCENT)
-                    full, ai_cost = client.solve(text, on_delta=lambda d: self.delta.emit(d))
+                    full, ai_cost = client.solve(text_ai, on_delta=lambda d: self.delta.emit(d))
                 self.used_vision = use_vision
                 self.last_usage = dict(getattr(client, "last_usage", {}) or {})
                 if self.last_usage.get("total"):
