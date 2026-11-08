@@ -194,7 +194,10 @@
 
   function block(b){
     var k = b.k || 'md', v = b.v == null ? '' : b.v;
-    if(k === 'md') return md(v);
+    if(k === 'md'){
+      var mst = b.color ? ' style="color:' + b.color + '"' : '';
+      return '<div' + mst + '>' + md(v) + '</div>';
+    }
     if(k === 'big'){
       var st = 'color:' + (b.color || 'var(--ok)') + ';font-size:' + (b.size || 24) + 'px;';
       return '<div class="big" style="' + st + '">' + md(v) + '</div>';

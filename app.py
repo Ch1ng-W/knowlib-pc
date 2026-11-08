@@ -3498,7 +3498,8 @@ class BankPage(QWidget):
         self._on_back = on_back
         self.setObjectName("bankPage")
         self.setStyleSheet("")
-        self._c = theme_colors(getattr(parent, "theme", LIGHT))
+        self._t = getattr(parent, "theme", LIGHT)
+        self._c = theme_colors(self._t)
 
         self.items = []
 
@@ -3530,7 +3531,17 @@ class BankPage(QWidget):
         body.addWidget(self.list)
 
         right = QVBoxLayout()
-        self.view = QTextBrowser()
+        # 预览区：装了 WebEngine 就用 KaTeX（和答案窗/历史预览一致）
+        self._use_web = bool(web_view and getattr(web_view, "math_available", None)
+                             and web_view.math_available())
+        self.view = None
+        if self._use_web:
+            try:
+                self.view = web_view.make_math_view(self, transparent=False)
+            except Exception:
+                self._use_web = False
+        if self.view is None:
+            self.view = QTextBrowser()
         right.addWidget(self.view, 1)
         # ---- 按钮（先统一建好，再用网格摆，避免窗口变窄时被挤成一条）
         self.btn_edit = QPushButton("编辑这条")
@@ -3621,8 +3632,7 @@ class BankPage(QWidget):
         if self.list.count():
             self.list.setCurrentRow(0)
         else:
-            self.view.setHtml("<div style='color:#7f8896;padding:20px'>"
-                              "题库还是空的。识别并答对一次后会自动存进来。</div>")
+            self._show_empty("题库还是空的。识别并答对一次后会自动存进来。")
 
     def _checked_items(self):
         out = []
@@ -3658,6 +3668,31 @@ class BankPage(QWidget):
         sol = (it.get("solution") or "").strip()
         if not ans and sol:
             ans = _guess_answer(sol)
+
+        if self._use_web:
+            blocks = [{"k": "meta", "v": "存于 %s · 命中 %s 次%s" % (
+                it.get("created", ""), it.get("hits", 0),
+                (" · " + qtype) if qtype else "")},
+                {"k": "lab", "v": "题目", "color": self._c["accent"]},
+                {"k": "md", "v": md_render.clean_text(it.get("q_text", ""))},
+                {"k": "lab", "v": "答案", "color": self._c["accent"]}]
+            if ans:
+                blocks.append({"k": "md", "v": ans, "color": self._c["answer"]})
+            else:
+                blocks.append({"k": "meta",
+                               "v": "本题未单独给出答案，见下方解析"})
+            blocks.append({"k": "lab", "v": "解析", "color": self._c["accent"]})
+            blocks.append({"k": "md", "v": sol or "（无）"})
+            web_view.math_render(self.view, {
+                "blocks": blocks,
+                "fg": self._c["text"], "muted": self._c["muted"],
+                "accent": self._c["accent"], "ok": self._c["answer"],
+                "line": self._t.get("border", "rgba(0,0,0,0.12)"),
+                "size": 15,
+                "bg": self._t.get("input", "#FFFFFF"),
+                "padding": 2,
+            })
+            return
         ans_html = (md_render.to_html(ans, color=self._c["answer"], font_size=16) if ans
                     else "<div style='color:%s;font-size:13px;padding:4px 0'>"
                          "本题未单独给出答案，见下方解析</div>" % self._c["muted"])
@@ -3673,6 +3708,19 @@ class BankPage(QWidget):
         )
         self.view.setHtml(html)
         self.view.verticalScrollBar().setValue(0)
+
+    def _show_empty(self, msg):
+        if self._use_web:
+            web_view.math_render(self.view, {
+                "blocks": [{"k": "meta", "v": msg}],
+                "fg": self._c["muted"], "muted": self._c["muted"],
+                "accent": self._c["accent"], "ok": self._c["answer"],
+                "size": 13,
+                "bg": self._t.get("input", "#FFFFFF"),
+                "padding": 20,
+            })
+            return
+        self.view.setHtml("<div style='color:#7f8896;padding:20px'>" + msg + "</div>")
 
     def edit_current(self):
         row = self.list.currentRow()
