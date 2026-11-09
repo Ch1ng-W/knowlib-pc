@@ -89,6 +89,91 @@ def _ts(s):
         return int(time.time() * 1000)
 
 
+# ---------------------------------------------------------------- 墓碑（删除同步）
+def tomb_path():
+    return os.path.join(os.path.dirname(config_store.config_path()), "deleted_hist.json")
+
+
+def load_tombs():
+    """{历史id: 删除时间ms}"""
+    p = tomb_path()
+    if not os.path.exists(p):
+        return {}
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_tombs(d):
+    try:
+        p = tomb_path()
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, p)
+        return True
+    except Exception:
+        return False
+
+
+def prune_tombs(d, days=90):
+    cut = int(time.time() * 1000) - days * 86400000
+    try:
+        return {k: v for k, v in (d or {}).items() if int(v or 0) >= cut}
+    except Exception:
+        return d or {}
+
+
+def apply_remote_deletes(hd):
+    """把云端墓碑对应的本地记录删掉。返回删了几条。"""
+    ids = set()
+    for it in (hd or []):
+        i = it.get("id")
+        if i:
+            ids.add(i)
+    if not ids:
+        return 0
+    cur = config_store.load_history(limit=100000)
+    keep = [x for x in cur if _hist_id(x) not in ids]
+    n = len(cur) - len(keep)
+    if n:
+        keep.reverse()          # load_history 是新的在前，写回要旧的在前
+        config_store.write_history(keep)
+        t = load_tombs()
+        for i in ids:
+            t.pop(i, None)
+        save_tombs(t)
+    return n
+
+
+def delete_history(ids):
+    """删本地历史 + 写墓碑（下次同步把删除带到云端）。返回删除条数。"""
+    ids = [str(x) for x in (ids or []) if x]
+    if not ids:
+        return 0
+    idset = set(ids)
+    cur = config_store.load_history(limit=100000)
+    keep = []
+    n = 0
+    for it in cur:
+        if _hist_id(it) in idset:
+            n += 1
+        else:
+            keep.append(it)
+    if n:
+        keep.reverse()
+        config_store.write_history(keep)
+        t = prune_tombs(load_tombs())
+        now = int(time.time() * 1000)
+        for i in ids:
+            t[i] = now
+        save_tombs(t)
+    return n
+
+
 def merge_history(remote_items):
     """把云端历史补进本地 jsonl（按 id 去重）。返回新增条数。"""
     p = history_path()
@@ -161,6 +246,14 @@ def sync_now(cfg=None):
         papers.append({"code": c, "title": info.get("title") or "", "t": int(info.get("t") or 0),
                        "key": info.get("key") or ""})
 
+    # 墓碑：本地删过的历史，也要推给云端（否则别的设备会把它们拉回来）
+    tombs = prune_tombs(load_tombs())
+    if tombs:
+        save_tombs(tombs)
+    hsend = list(hloc)
+    for _tid, _tt in tombs.items():
+        hsend.append({"id": _tid, "t": int(_tt or 0), "del": True})
+
     st, remote = _req("GET", "/api/sync?code=%s&key=%s" % (code, key))
     if st == 403:
         return {"ok": False, "msg": "同步密钥不对"}
@@ -168,9 +261,10 @@ def sync_now(cfg=None):
         return {"ok": False, "msg": remote.get("message") or "拉取失败（%s）" % st}
 
     added, updated = qbank.apply_remote(remote.get("q") or [])
+    hist_deleted = apply_remote_deletes(remote.get("hd"))
 
     st2, res = _req("POST", "/api/sync", {"code": code, "key": key,
-                                          "q": qloc, "h": hloc, "p": papers,
+                                          "q": qloc, "h": hsend, "p": papers,
                                           "device": _device_info()})
     if st2 == 403:
         return {"ok": False, "msg": "同步密钥不对"}
@@ -179,6 +273,7 @@ def sync_now(cfg=None):
 
     added2, updated2 = qbank.apply_remote(res.get("q") or [])
     hist_added = merge_history(res.get("h") or [])
+    hist_deleted += apply_remote_deletes(res.get("hd"))
 
     # 把云端「我发布过的试卷」合并回本地，这样换设备也能在组卷菜单里看到后台
     papers_got = 0
@@ -203,9 +298,11 @@ def sync_now(cfg=None):
         "added": added + added2,
         "updated": updated + updated2,
         "hist_added": hist_added,
+        "hist_deleted": hist_deleted,
         "papers_got": papers_got,
         "devices": list((res.get("dev") or {}).values()),
         "sent": len(qloc),
         "total": len(res.get("q") or []),
-        "msg": "同步完成：新增 %d、更新 %d、历史 +%d" % (added + added2, updated + updated2, hist_added),
+        "msg": ("同步完成：新增 %d、更新 %d、历史 +%d" % (added + added2, updated + updated2, hist_added)
+                + (("、删除 %d" % hist_deleted) if hist_deleted else "")),
     }

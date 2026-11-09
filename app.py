@@ -2132,11 +2132,12 @@ class HistoryPage(QWidget):
         self.btn_add = self._mkbtn("加入题库（选中 0）", self.add_selected)
         self.btn_add_all = self._mkbtn("有效项全部入库", self.add_all_to_bank)
         self.btn_clean = self._mkbtn("清理无效", self.clean_invalid)
+        self.btn_del_sel = self._mkbtn("删除选中", self.del_selected)
         self.btn_del = self._mkbtn("清空全部", self.clear_all)
         self.btn_close = self._mkbtn("← 返回", self._go_back)
         self.btn_close.setVisible(False)
         for b in (self.btn_add, self.btn_add_all, self.btn_clean,
-                  self.btn_del, self.btn_close):
+                  self.btn_del_sel, self.btn_del, self.btn_close):
             b.setFixedHeight(30)
             tools.addWidget(b)
         tools.addStretch(1)
@@ -2339,6 +2340,23 @@ class HistoryPage(QWidget):
             self.list.item(i).setCheckState(Qt.Unchecked)
         self.list.blockSignals(False)
         self._update_selcount()
+
+    def del_selected(self):
+        """删除勾选的历史记录（本地真删 + 写墓碑，下次同步会把删除带到云端）"""
+        items = self._checked_items()
+        if not items:
+            self.count.setText("先勾选要删除的记录")
+            return
+        if not ask_yes(self, "删除记录",
+                       "确认删除选中的 %d 条历史记录？删除后会同步到云端，不可恢复。" % len(items),
+                       ok_text="删除"):
+            return
+        import cloud_sync as _cs
+        ids = [_cs._hist_id(it) for it in items]
+        n = _cs.delete_history(ids)
+        self.sel.clear()
+        self.reload()
+        self.count.setText("已删除 %d 条（下次同步生效）" % n)
 
     def add_all_to_bank(self):
         vis, _ = self._visible_items()
